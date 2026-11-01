@@ -2,6 +2,8 @@ use clap::Parser;
 use std::error::Error;
 use std::process::Command;
 
+pub mod interactive;
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 pub struct Args {

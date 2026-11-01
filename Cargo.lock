@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "alphanumeric-sort"
+version = "1.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a97de3ad85c4425a2c267a5e91adbe49f9f14e650bd9c78e96b6bc00e5f6673a"
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -235,8 +241,10 @@ dependencies = [
 name = "rusty_shell"
 version = "0.1.0"
 dependencies = [
+ "alphanumeric-sort",
  "clap",
  "rustyline",
+ "shlex",
 ]
 
 [[package]]
@@ -258,6 +266,12 @@ dependencies = [
  "utf8parse",
  "windows-sys",
 ]
+
+[[package]]
+name = "shlex"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "smallvec"
