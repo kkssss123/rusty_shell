@@ -2,6 +2,7 @@ use clap::Parser;
 use std::error::Error;
 use std::process::Command;
 
+mod commands;
 pub mod interactive;
 
 #[derive(Parser)]

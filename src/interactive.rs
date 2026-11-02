@@ -1,8 +1,8 @@
-use alphanumeric_sort;
+use crate::commands::rn;
+use clap::Parser;
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
 use shlex;
-use std::fs;
 use std::io::{self, Error, ErrorKind};
 use std::path::Path;
 
@@ -52,109 +52,18 @@ fn execute(line: &str) -> io::Result<()> {
 
     match cmd.as_str() {
         "rn" => {
-            let count = match args.get(3) {
-                Some(c) => c.parse().map_err(|_| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!("count should be 0 or more."),
-                    )
-                })?,
-                None => 1,
-            };
+            let args = rn::RnArgs::try_parse_from(args)
+                .map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))?;
 
-            let from = args.get(1).map_or(Path::new("."), |p| Path::new(p));
-            let to = args.get(2).map_or(from, |p| Path::new(p));
-
-            rename_files(from, to, count)
+            let path = args.from.as_deref().unwrap_or(".");
+            let from = Path::new(path);
+            let to = Path::new(args.to.as_deref().unwrap_or(path));
+            let first = args.first.unwrap_or_else(|| 1);
+            rn::execute(from, to, first, args.verbose)
         }
         _ => {
             println!("command not found: {}", line);
             Ok(())
         }
     }
-}
-
-fn rename_files(from: &Path, to: &Path, count: u32) -> io::Result<()> {
-    let from = dunce::canonicalize(from)?;
-
-    fs::create_dir_all(to)?;
-    let to = dunce::canonicalize(to)?;
-    println!("{:?} {:?}", from, to);
-
-    let is_subdir = to != from && to.starts_with(&from);
-
-    rename_files_recursive(&from, &to, &to, is_subdir, count)
-}
-
-fn rename_files_recursive(
-    from: &Path,
-    to: &Path,
-    to_root: &Path,
-    is_subdir: bool,
-    count: u32
-) -> io::Result<()> {
-    let mut file_names: Vec<String> = vec![];
-
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_dir() {
-            if is_subdir && dunce::canonicalize(&path)? == to_root {
-                continue;
-            }
-            let relative = path.strip_prefix(from).expect("path should be inside from");
-            rename_files_recursive(&path, &to.join(relative), to_root, is_subdir, count)?;
-            continue;
-        }
-
-        let file_name = entry.file_name().to_string_lossy().into_owned();
-        if is_target(&file_name) {
-            file_names.push(file_name);
-        }
-    }
-
-    file_names.sort_by(|a, b| {
-        let a = a.to_lowercase();
-        let a = filename(&a);
-        let b = b.to_lowercase();
-        let b = filename(&b);
-
-        alphanumeric_sort::compare_str(a, b)
-    });
-
-    fs::create_dir_all(to)?;
-
-    let mut count = count;
-    let width = (count + file_names.len() as u32)
-        .saturating_sub(1)
-        .to_string()
-        .len()
-        .max(3);
-    for f in file_names {
-        let ext = extension(&f);
-        let new_name = format!("{:0width$}.{ext}", count, width = width);
-        println!("file renamed to: {} -> {}", f, new_name);
-        fs::rename(from.join(f), to.join(new_name))?;
-        count += 1;
-    }
-    Ok(())
-}
-
-static TARGET: [&str; 3] = ["jpg", "jpeg", "webp"];
-
-fn is_target(file_name: &str) -> bool {
-    TARGET
-        .iter()
-        .any(|ext| extension(file_name).eq_ignore_ascii_case(ext))
-}
-
-fn filename(file_name: &str) -> &str {
-    file_name
-        .rsplit_once(".")
-        .map_or(file_name, |(name, _)| name)
-}
-
-fn extension(file_name: &str) -> &str {
-    file_name.rsplit(".").next().unwrap_or("no extension")
 }
