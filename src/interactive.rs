@@ -3,7 +3,7 @@ use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
 use shlex;
 use std::fs;
-use std::io::{Error, ErrorKind};
+use std::io::{self, Error, ErrorKind};
 use std::path::Path;
 
 pub fn run() -> Result<()> {
@@ -42,7 +42,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn execute(line: &str) -> std::io::Result<()> {
+fn execute(line: &str) -> io::Result<()> {
     let args = shlex::split(line)
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "invalid command syntax"))?;
 
@@ -74,7 +74,25 @@ fn execute(line: &str) -> std::io::Result<()> {
     }
 }
 
-fn rename_files(from: &Path, to: &Path, count: u32) -> std::io::Result<()> {
+fn rename_files(from: &Path, to: &Path, count: u32) -> io::Result<()> {
+    let from = dunce::canonicalize(from)?;
+
+    fs::create_dir_all(to)?;
+    let to = dunce::canonicalize(to)?;
+    println!("{:?} {:?}", from, to);
+
+    let is_subdir = to != from && to.starts_with(&from);
+
+    rename_files_recursive(&from, &to, &to, is_subdir, count)
+}
+
+fn rename_files_recursive(
+    from: &Path,
+    to: &Path,
+    to_root: &Path,
+    is_subdir: bool,
+    count: u32
+) -> io::Result<()> {
     let mut file_names: Vec<String> = vec![];
 
     for entry in fs::read_dir(from)? {
@@ -82,8 +100,11 @@ fn rename_files(from: &Path, to: &Path, count: u32) -> std::io::Result<()> {
         let path = entry.path();
 
         if path.is_dir() {
+            if is_subdir && dunce::canonicalize(&path)? == to_root {
+                continue;
+            }
             let relative = path.strip_prefix(from).expect("path should be inside from");
-            rename_files(&path, &to.join(relative), count)?;
+            rename_files_recursive(&path, &to.join(relative), to_root, is_subdir, count)?;
             continue;
         }
 
