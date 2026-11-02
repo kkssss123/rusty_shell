@@ -2,7 +2,6 @@ use crate::commands::rn;
 use clap::Parser;
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
-use shlex;
 use std::io::{self, Error, ErrorKind};
 use std::path::Path;
 
