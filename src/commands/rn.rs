@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::path::Path;
-use std::{fs, io};
+use std::{fs, io::Result, result};
 
 #[derive(Parser, Debug)]
 pub(crate) struct RnArgs {
@@ -16,21 +16,25 @@ pub(crate) struct RnArgs {
     pub(crate) verbose: bool,
 }
 
-fn parse_first(value: &str) -> Result<u32, String> {
+fn parse_first(value: &str) -> result::Result<u32, String> {
     value
         .parse()
         .map_err(|_| "first should be 0 or more integer.".to_string())
 }
 
-pub(crate) fn execute(from: &Path, to: &Path, first: u32, verbose: bool) -> io::Result<()> {
+pub(crate) fn execute(from: &Path, to: &Path, first: u32, verbose: bool) -> Result<()> {
     let from = dunce::canonicalize(from)?;
 
     fs::create_dir_all(to)?;
     let to = dunce::canonicalize(to)?;
 
+    let backup = from.join("backup");
+    fs::create_dir(&backup)?;
+    let backup = dunce::canonicalize(&backup)?;
+
     let is_subdir = to != from && to.starts_with(&from);
 
-    rename_files(&from, &to, &to, is_subdir, first, verbose)
+    rename_files(&from, &to, &to, is_subdir, &backup, &backup, first, verbose)
 }
 
 fn rename_files(
@@ -38,17 +42,19 @@ fn rename_files(
     to: &Path,
     to_root: &Path,
     is_subdir: bool,
+    backup: &Path,
+    backup_root: &Path,
     first: u32,
     verbose: bool,
-) -> io::Result<()> {
+) -> Result<()> {
     let mut file_names: Vec<String> = vec![];
 
     for entry in fs::read_dir(from)? {
         let entry = entry?;
-        let path = entry.path();
+        let path = dunce::canonicalize(entry.path())?;
 
         if path.is_dir() {
-            if is_subdir && dunce::canonicalize(&path)? == to_root {
+            if (is_subdir && path == to_root) || path == backup_root {
                 continue;
             }
             let relative = path.strip_prefix(from).expect("path should be inside from");
@@ -57,6 +63,8 @@ fn rename_files(
                 &to.join(relative),
                 to_root,
                 is_subdir,
+                &backup.join(relative),
+                backup_root,
                 first,
                 verbose,
             )?;
@@ -78,8 +86,23 @@ fn rename_files(
         alphanumeric_sort::compare_str(a, b)
     });
 
-    fs::create_dir_all(to)?;
+    fs::create_dir_all(backup)?;
+    let backup = dunce::canonicalize(backup)?;
+    copy_and_rename_to_backup(from, &backup, &file_names, first, verbose)?;
+    remove_src_files(from, &file_names)?;
+    move_backup_to_dst(&backup, to)?;
+    fs::remove_dir(backup)?;
 
+    Ok(())
+}
+
+fn copy_and_rename_to_backup(
+    from: &Path,
+    backup: &Path,
+    file_names: &[String],
+    first: u32,
+    verbose: bool,
+) -> Result<()> {
     let mut count = first;
     let width = (count + file_names.len() as u32)
         .saturating_sub(1)
@@ -92,8 +115,33 @@ fn rename_files(
         if verbose {
             println!("file renamed to: {} -> {}", f, new_name);
         }
-        fs::rename(from.join(f), to.join(new_name))?;
+        fs::copy(from.join(f), backup.join(new_name))?;
         count += 1;
+    }
+    Ok(())
+}
+
+fn remove_src_files(from: &Path, file_names: &[String]) -> Result<()> {
+    for f in file_names {
+        fs::remove_file(from.join(f))?;
+    }
+    Ok(())
+}
+
+fn move_backup_to_dst(backup: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to)?;
+
+    for entry in fs::read_dir(backup)? {
+        let entry = entry?;
+        let from = entry.path();
+        if !from.is_file() {
+            continue;
+        }
+
+        fs::rename(
+            &from,
+            to.join(&from.file_name().expect("file_name always exists")),
+        )?;
     }
     Ok(())
 }
@@ -122,7 +170,7 @@ mod tests {
     use tempfile::*;
 
     #[test]
-    fn file_renames_to_number() -> io::Result<()> {
+    fn file_renames_to_number() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
 
@@ -140,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_files_renamed_in_order() -> io::Result<()> {
+    fn multiple_files_renamed_in_order() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
 
@@ -164,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn non_target_files_untouched() -> io::Result<()> {
+    fn non_target_files_untouched() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
 
@@ -191,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn numbering_starts_from_first() -> io::Result<()> {
+    fn numbering_starts_from_first() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
 
@@ -211,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn number_width_expands_past_three_digits() -> io::Result<()> {
+    fn number_width_expands_past_three_digits() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
 
@@ -230,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn dir_hierarchy_is_retained() -> io::Result<()> {
+    fn dir_hierarchy_is_retained() -> Result<()> {
         let from = tempdir()?;
         let from_path = from.path();
 
@@ -276,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn numbering_restarts_in_each_dir() -> io::Result<()> {
+    fn numbering_restarts_in_each_dir() -> Result<()> {
         let from = tempdir()?;
         let from_path = from.path();
 
@@ -316,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn dst_inside_src_is_skipped() -> io::Result<()> {
+    fn dst_inside_src_is_skipped() -> Result<()> {
         let dir = tempdir()?;
         let dir_path = dir.path();
 
@@ -354,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn in_place_renaming_does_not_overwrite_files() -> io::Result<()> {
+    fn in_place_renaming_does_not_overwrite_files() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
 
@@ -373,10 +421,10 @@ mod tests {
     }
 
     #[test]
-    fn existing_dst_file_is_overwritten() -> io::Result<()> {
+    fn existing_dst_file_is_overwritten() -> Result<()> {
         let from = tempdir()?;
         let from_path = from.path();
-        
+
         let img = from_path.join("from_image.jpg");
         fs::write(&img, b"from image")?;
 
