@@ -1,6 +1,7 @@
 use clap::Parser;
-use std::path::Path;
-use std::{fs, io::Result, result};
+use std::io::{Error, ErrorKind, Result};
+use std::path::{Path, PathBuf};
+use std::{fs, result};
 
 #[derive(Parser, Debug)]
 pub(crate) struct RnArgs {
@@ -9,65 +10,115 @@ pub(crate) struct RnArgs {
     #[arg(short, long)]
     pub(crate) to: Option<String>,
 
-    #[arg(short, long, value_parser = parse_first)]
+    #[arg(short, long, value_parser = RnArgs::parse_first)]
     pub(crate) first: Option<u32>,
 
     #[arg(short, long)]
     pub(crate) verbose: bool,
 }
 
-fn parse_first(value: &str) -> result::Result<u32, String> {
-    value
-        .parse()
-        .map_err(|_| "first should be 0 or more integer.".to_string())
+impl RnArgs {
+    fn parse_first(value: &str) -> result::Result<u32, String> {
+        value
+            .parse()
+            .map_err(|_| "first should be 0 or more integer.".to_string())
+    }
+}
+
+struct RenamePaths {
+    from: PathBuf,
+    to: PathBuf,
+    backup: PathBuf,
+}
+
+impl RenamePaths {
+    fn setup(from: &Path, to: &Path) -> Result<RenamePaths> {
+        let from = dunce::canonicalize(&from)?;
+
+        fs::create_dir_all(to)?;
+        let to = dunce::canonicalize(&to)?;
+
+        let backup = from.join("backup");
+        if to.starts_with(&backup) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("destination must not be inside {}", backup.display()),
+            ));
+        }
+
+        fs::create_dir(&backup)?;
+        let backup = dunce::canonicalize(&backup)?;
+
+        Ok(RenamePaths { from, to, backup })
+    }
+
+    fn join(&self, path: &Path) -> RenamePaths {
+        let from = self.from.join(path);
+        let to = self.to.join(path);
+        let backup = self.backup.join(path);
+
+        RenamePaths { from, to, backup }
+    }
+}
+
+struct RenameContext {
+    to_root: PathBuf,
+    backup_root: PathBuf,
+    is_subdir: bool,
+    first: u32,
+    verbose: bool,
+}
+
+impl RenameContext {
+    fn new(
+        from: &Path,
+        to_root: PathBuf,
+        backup_root: PathBuf,
+        first: u32,
+        verbose: bool,
+    ) -> RenameContext {
+        let is_subdir = to_root != from && to_root.starts_with(&from);
+
+        RenameContext {
+            to_root,
+            backup_root,
+            is_subdir,
+            first,
+            verbose,
+        }
+    }
 }
 
 pub(crate) fn execute(from: &Path, to: &Path, first: u32, verbose: bool) -> Result<()> {
-    let from = dunce::canonicalize(from)?;
-
-    fs::create_dir_all(to)?;
-    let to = dunce::canonicalize(to)?;
-
-    let backup = from.join("backup");
-    fs::create_dir(&backup)?;
-    let backup = dunce::canonicalize(&backup)?;
-
-    let is_subdir = to != from && to.starts_with(&from);
-
-    rename_files(&from, &to, &to, is_subdir, &backup, &backup, first, verbose)
+    let paths = RenamePaths::setup(from, to)?;
+    let context = RenameContext::new(
+        &paths.from,
+        paths.to.clone(),
+        paths.backup.clone(),
+        first,
+        verbose,
+    );
+    rename_files(paths, &context)?;
+    fs::remove_dir(&context.backup_root)?;
+    Ok(())
 }
 
-fn rename_files(
-    from: &Path,
-    to: &Path,
-    to_root: &Path,
-    is_subdir: bool,
-    backup: &Path,
-    backup_root: &Path,
-    first: u32,
-    verbose: bool,
-) -> Result<()> {
+fn rename_files(paths: RenamePaths, context: &RenameContext) -> Result<()> {
     let mut file_names: Vec<String> = vec![];
 
-    for entry in fs::read_dir(from)? {
+    for entry in fs::read_dir(&paths.from)? {
         let entry = entry?;
         let path = dunce::canonicalize(entry.path())?;
 
         if path.is_dir() {
-            if (is_subdir && path == to_root) || path == backup_root {
+            if (context.is_subdir && path == context.to_root) || path == context.backup_root {
                 continue;
             }
-            let relative = path.strip_prefix(from).expect("path should be inside from");
-            rename_files(
-                &path,
-                &to.join(relative),
-                to_root,
-                is_subdir,
-                &backup.join(relative),
-                backup_root,
-                first,
-                verbose,
-            )?;
+            let relative = path
+                .strip_prefix(&paths.from)
+                .expect("path should be inside from");
+            let paths = paths.join(&relative);
+            rename_files(paths, context)?;
             continue;
         }
 
@@ -86,24 +137,22 @@ fn rename_files(
         alphanumeric_sort::compare_str(a, b)
     });
 
-    fs::create_dir_all(backup)?;
-    let backup = dunce::canonicalize(backup)?;
-    copy_and_rename_to_backup(from, &backup, &file_names, first, verbose)?;
-    remove_src_files(from, &file_names)?;
-    move_backup_to_dst(&backup, to)?;
-    fs::remove_dir(backup)?;
-
+    fs::create_dir_all(&paths.backup)?;
+    copy_and_rename_to_backup(&paths, context, &file_names)?;
+    remove_src_files(&paths.from, &file_names)?;
+    move_backup_to_dst(&paths.backup, &paths.to)?;
+    if paths.backup != context.backup_root {
+        fs::remove_dir(paths.backup)?;
+    }
     Ok(())
 }
 
 fn copy_and_rename_to_backup(
-    from: &Path,
-    backup: &Path,
+    paths: &RenamePaths,
+    context: &RenameContext,
     file_names: &[String],
-    first: u32,
-    verbose: bool,
 ) -> Result<()> {
-    let mut count = first;
+    let mut count = context.first;
     let width = (count + file_names.len() as u32)
         .saturating_sub(1)
         .to_string()
@@ -112,10 +161,14 @@ fn copy_and_rename_to_backup(
     for f in file_names {
         let ext = extension(&f);
         let new_name = format!("{:0width$}.{ext}", count, width = width);
-        if verbose {
-            println!("file renamed to: {} -> {}", f, new_name);
+        if context.verbose {
+            println!(
+                "will be renamed to: {} -> {}",
+                paths.from.join(f).display(),
+                paths.to.join(&new_name).display()
+            );
         }
-        fs::copy(from.join(f), backup.join(new_name))?;
+        fs::copy(paths.from.join(f), paths.backup.join(new_name))?;
         count += 1;
     }
     Ok(())
@@ -133,14 +186,14 @@ fn move_backup_to_dst(backup: &Path, to: &Path) -> Result<()> {
 
     for entry in fs::read_dir(backup)? {
         let entry = entry?;
-        let from = entry.path();
-        if !from.is_file() {
+        let backup_file = entry.path();
+        if !backup_file.is_file() {
             continue;
         }
 
         fs::rename(
-            &from,
-            to.join(&from.file_name().expect("file_name always exists")),
+            &backup_file,
+            to.join(&backup_file.file_name().expect("file_name always exists")),
         )?;
     }
     Ok(())
