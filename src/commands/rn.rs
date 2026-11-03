@@ -134,7 +134,6 @@ mod tests {
         let img_after = path.join("001.jpg");
 
         assert!(!img_before.exists());
-        assert!(img_after.is_file());
         assert_eq!(fs::read(img_after)?, b"test image");
 
         Ok(())
@@ -186,7 +185,6 @@ mod tests {
         assert_eq!(fs::read(jpeg)?, b"jpeg");
         let webp = path.join("003.webp");
         assert_eq!(fs::read(webp)?, b"webp");
-        assert!(txt.exists());
         assert_eq!(fs::read(txt)?, b"never changed");
 
         Ok(())
@@ -351,6 +349,44 @@ mod tests {
             )
             .join("001.jpg");
         assert_eq!(fs::read(&img)?, b"img2");
+
+        Ok(())
+    }
+
+    #[test]
+    fn in_place_renaming_does_not_overwrite_files() -> io::Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path();
+
+        for i in 1..=10 {
+            let img = path.join(format!("{:03}.jpg", i));
+            fs::write(&img, i.to_string())?;
+        }
+
+        execute(path, path, 3, false)?;
+        for i in 3..=12 {
+            let img = path.join(format!("{:03}.jpg", i));
+            assert_eq!(fs::read_to_string(&img)?, format!("{}", i - 2));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn existing_dst_file_is_overwritten() -> io::Result<()> {
+        let from = tempdir()?;
+        let from_path = from.path();
+        
+        let img = from_path.join("from_image.jpg");
+        fs::write(&img, b"from image")?;
+
+        let to = tempdir()?;
+        let to_path = to.path();
+        let img = to_path.join("001.jpg");
+        fs::write(&img, b"to image")?;
+
+        execute(from_path, to_path, 1, false)?;
+        assert_eq!(fs::read(&img)?, b"from image");
 
         Ok(())
     }
