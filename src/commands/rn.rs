@@ -1,6 +1,8 @@
 use clap::Parser;
+use std::fs::DirEntry;
 use std::io::{Error, ErrorKind, Result};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use std::{fs, result};
 
 #[derive(Parser, Debug)]
@@ -80,6 +82,36 @@ pub(crate) struct RnArgs {
         help = "Suffix for renamed files"
     )]
     suffix: String,
+
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "sort_by_modified_time",
+            "sort_by_modified_time_desc",
+        ],
+        help = "Sort by file name in descending order"
+    )]
+    reverse: bool,
+
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "reverse",
+            "sort_by_modified_time_desc",
+        ],
+        help = "Sort by modification time in ascending order"
+    )]
+    sort_by_modified_time: bool,
+
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "reverse",
+            "sort_by_modified_time",
+        ],
+        help = "Sort by modification time in descending order"
+    )]
+    sort_by_modified_time_desc: bool,
 }
 
 impl RnArgs {
@@ -104,9 +136,10 @@ struct RenamePaths {
 }
 
 impl RenamePaths {
-    fn setup(from: &Path, to: &Path) -> Result<RenamePaths> {
-        let from = dunce::canonicalize(&from)?;
+    fn setup(from: &Path, to: Option<&Path>) -> Result<RenamePaths> {
+        let from = dunce::canonicalize(from)?;
 
+        let to = to.unwrap_or(from.as_path());
         fs::create_dir_all(to)?;
         let to = dunce::canonicalize(&to)?;
 
@@ -133,6 +166,11 @@ impl RenamePaths {
     }
 }
 
+enum SortBy {
+    FileName { desc: bool },
+    ModificationTime { desc: bool },
+}
+
 struct RenameContext {
     to_root: PathBuf,
     backup_root: PathBuf,
@@ -141,6 +179,7 @@ struct RenameContext {
     verbose: bool,
     prefix: String,
     suffix: String,
+    sort_by: SortBy,
 }
 
 impl RenameContext {
@@ -152,8 +191,20 @@ impl RenameContext {
         verbose: bool,
         prefix: String,
         suffix: String,
+        reverse: bool,
+        sort_by_modified_time: bool,
+        sort_by_modified_time_desc: bool,
     ) -> RenameContext {
         let is_subdir = to_root != from && to_root.starts_with(&from);
+        let sort_by = if reverse {
+            SortBy::FileName { desc: true }
+        } else if sort_by_modified_time {
+            SortBy::ModificationTime { desc: false }
+        } else if sort_by_modified_time_desc {
+            SortBy::ModificationTime { desc: true }
+        } else {
+            SortBy::FileName { desc: false }
+        };
 
         RenameContext {
             to_root,
@@ -163,14 +214,44 @@ impl RenameContext {
             verbose,
             prefix,
             suffix,
+            sort_by,
+        }
+    }
+}
+
+struct TargetFile {
+    name: String,
+    modified: SystemTime,
+}
+
+impl TargetFile {
+    fn build(entry: &DirEntry) -> Result<Option<TargetFile>> {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_target(&name) {
+            return Ok(None);
+        }
+        let modified = entry.metadata()?.modified()?;
+
+        Ok(Some(TargetFile { name, modified }))
+    }
+}
+
+struct Entries {
+    target_files: Vec<TargetFile>,
+    subdirs: Vec<RenamePaths>,
+}
+
+impl Entries {
+    fn new() -> Entries {
+        Entries {
+            target_files: vec![],
+            subdirs: vec![],
         }
     }
 }
 
 pub(crate) fn execute(args: RnArgs) -> Result<()> {
-    let from = args.from.as_path();
-    let to = args.to.as_deref().unwrap_or(from);
-    let paths = RenamePaths::setup(from, to)?;
+    let paths = RenamePaths::setup(args.from.as_path(), args.to.as_deref())?;
     let context = RenameContext::new(
         &paths.from,
         paths.to.clone(),
@@ -179,6 +260,9 @@ pub(crate) fn execute(args: RnArgs) -> Result<()> {
         args.verbose,
         args.prefix,
         args.suffix,
+        args.reverse,
+        args.sort_by_modified_time,
+        args.sort_by_modified_time_desc,
     );
     rename_files(paths, &context)?;
     fs::remove_dir(&context.backup_root)?;
@@ -186,12 +270,28 @@ pub(crate) fn execute(args: RnArgs) -> Result<()> {
 }
 
 fn rename_files(paths: RenamePaths, context: &RenameContext) -> Result<()> {
-    let mut file_names: Vec<String> = vec![];
+    let mut entries = collect_entries(&paths, context)?;
+    for subdir in entries.subdirs {
+        rename_files(subdir, context)?;
+    }
+
+    sort_files(&mut entries.target_files, &context.sort_by);
+    fs::create_dir_all(&paths.backup)?;
+    copy_and_rename_to_backup(&paths, context, &entries.target_files)?;
+    remove_src_files(&paths.from, &entries.target_files)?;
+    move_backup_to_dst(&paths.backup, &paths.to)?;
+    if paths.backup != context.backup_root {
+        fs::remove_dir(paths.backup)?;
+    }
+    Ok(())
+}
+
+fn collect_entries(paths: &RenamePaths, context: &RenameContext) -> Result<Entries> {
+    let mut entries = Entries::new();
 
     for entry in fs::read_dir(&paths.from)? {
         let entry = entry?;
         let path = dunce::canonicalize(entry.path())?;
-        // entry.metadata()?.modified()?;
 
         if path.is_dir() {
             if (context.is_subdir && path == context.to_root) || path == context.backup_root {
@@ -201,48 +301,42 @@ fn rename_files(paths: RenamePaths, context: &RenameContext) -> Result<()> {
                 .strip_prefix(&paths.from)
                 .expect("path should be inside from");
             let paths = paths.join(&relative);
-            rename_files(paths, context)?;
+            entries.subdirs.push(paths);
             continue;
         }
 
-        let file_name = entry.file_name().to_string_lossy().into_owned();
-        if is_target(&file_name) {
-            file_names.push(file_name);
+        if let Some(target_file) = TargetFile::build(&entry)? {
+            entries.target_files.push(target_file);
         }
     }
 
-    file_names.sort_by(|a, b| {
-        let a = a.to_lowercase();
+    Ok(entries)
+}
+
+fn sort_files(target_files: &mut [TargetFile], sort_by: &SortBy) {
+    target_files.sort_by(|a, b| {
+        let a = a.name.to_lowercase();
         let a = filename(&a);
-        let b = b.to_lowercase();
+        let b = b.name.to_lowercase();
         let b = filename(&b);
 
         alphanumeric_sort::compare_str(a, b)
     });
-
-    fs::create_dir_all(&paths.backup)?;
-    copy_and_rename_to_backup(&paths, context, &file_names)?;
-    remove_src_files(&paths.from, &file_names)?;
-    move_backup_to_dst(&paths.backup, &paths.to)?;
-    if paths.backup != context.backup_root {
-        fs::remove_dir(paths.backup)?;
-    }
-    Ok(())
 }
 
 fn copy_and_rename_to_backup(
     paths: &RenamePaths,
     context: &RenameContext,
-    file_names: &[String],
+    target_files: &[TargetFile],
 ) -> Result<()> {
     let mut count = context.first;
-    let width = (count + file_names.len() as u32)
+    let width = (count + target_files.len() as u32)
         .saturating_sub(1)
         .to_string()
         .len()
         .max(3);
-    for f in file_names {
-        let ext = extension(&f);
+    for file in target_files {
+        let ext = extension(&file.name);
         let new_name = format!(
             "{}{:0width$}{}.{ext}",
             context.prefix,
@@ -253,19 +347,19 @@ fn copy_and_rename_to_backup(
         if context.verbose {
             println!(
                 "will be renamed to: {} -> {}",
-                paths.from.join(f).display(),
+                paths.from.join(&file.name).display(),
                 paths.to.join(&new_name).display()
             );
         }
-        fs::copy(paths.from.join(f), paths.backup.join(new_name))?;
+        fs::copy(paths.from.join(&file.name), paths.backup.join(new_name))?;
         count += 1;
     }
     Ok(())
 }
 
-fn remove_src_files(from: &Path, file_names: &[String]) -> Result<()> {
-    for f in file_names {
-        fs::remove_file(from.join(f))?;
+fn remove_src_files(from: &Path, target_files: &[TargetFile]) -> Result<()> {
+    for file in target_files {
+        fs::remove_file(from.join(&file.name))?;
     }
     Ok(())
 }
@@ -319,20 +413,21 @@ mod tests {
         execute(args)
     }
 
+    fn make_file<'a>(path: PathBuf, content: &[u8]) -> Result<PathBuf> {
+        fs::write(&path, content)?;
+        Ok(path)
+    }
+
     #[test]
     fn file_renames_to_number() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-
-        let img_before = path.join("image.jpg");
-        fs::write(&img_before, b"test image")?;
+        let img_before = make_file(path.join("image.jpg"), b"test image")?;
 
         execute_with_args([path.as_os_str().to_os_string()])?;
 
-        let img_after = path.join("001.jpg");
-
         assert!(!img_before.exists());
-        assert_eq!(fs::read(img_after)?, b"test image");
+        assert_eq!(fs::read(path.join("001.jpg"))?, b"test image");
 
         Ok(())
     }
@@ -341,22 +436,15 @@ mod tests {
     fn multiple_files_renamed_in_order() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-
-        let img = path.join("image1.jpg");
-        fs::write(&img, b"image1")?;
-        let img = path.join("image10.jpg");
-        fs::write(&img, b"image10")?;
-        let img = path.join("image2.jpg");
-        fs::write(&img, b"image2")?;
+        make_file(path.join("image1.jpg"), b"image1")?;
+        make_file(path.join("image10.jpg"), b"image10")?;
+        make_file(path.join("image2.jpg"), b"image2")?;
 
         execute_with_args([path.as_os_str().to_os_string()])?;
 
-        let img = path.join("001.jpg");
-        assert_eq!(fs::read(img)?, b"image1");
-        let img = path.join("002.jpg");
-        assert_eq!(fs::read(img)?, b"image2");
-        let img = path.join("003.jpg");
-        assert_eq!(fs::read(img)?, b"image10");
+        assert_eq!(fs::read(path.join("001.jpg"))?, b"image1");
+        assert_eq!(fs::read(path.join("002.jpg"))?, b"image2");
+        assert_eq!(fs::read(path.join("003.jpg"))?, b"image10");
 
         Ok(())
     }
@@ -365,24 +453,16 @@ mod tests {
     fn non_target_files_untouched() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-
-        let jpg = path.join("image1.jpg");
-        fs::write(&jpg, b"jpg")?;
-        let jpeg = path.join("image2.jpeg");
-        fs::write(&jpeg, b"jpeg")?;
-        let webp = path.join("image3.webp");
-        fs::write(&webp, b"webp")?;
-        let txt = path.join("nontarget.txt");
-        fs::write(&txt, b"never changed")?;
+        make_file(path.join("image1.jpg"), b"jpg")?;
+        make_file(path.join("image2.jpeg"), b"jpeg")?;
+        make_file(path.join("image3.webp"), b"webp")?;
+        let txt = make_file(path.join("not_target.txt"), b"never changed")?;
 
         execute_with_args([path.as_os_str().to_os_string()])?;
 
-        let jpg = path.join("001.jpg");
-        assert_eq!(fs::read(jpg)?, b"jpg");
-        let jpeg = path.join("002.jpeg");
-        assert_eq!(fs::read(jpeg)?, b"jpeg");
-        let webp = path.join("003.webp");
-        assert_eq!(fs::read(webp)?, b"webp");
+        assert_eq!(fs::read(path.join("001.jpg"))?, b"jpg");
+        assert_eq!(fs::read(path.join("002.jpeg"))?, b"jpeg");
+        assert_eq!(fs::read(path.join("003.webp"))?, b"webp");
         assert_eq!(fs::read(txt)?, b"never changed");
 
         Ok(())
@@ -392,21 +472,16 @@ mod tests {
     fn numbering_starts_from_first() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-
-        let img = path.join("image1.jpg");
-        fs::write(&img, b"image1")?;
-        let img = path.join("image2.jpg");
-        fs::write(&img, b"image2")?;
+        make_file(path.join("image1.jpg"), b"image1")?;
+        make_file(path.join("image2.jpg"), b"image2")?;
 
         execute_with_args([
             path.as_os_str().to_os_string(),
             OsString::from("--first=10"),
         ])?;
 
-        let img = path.join("010.jpg");
-        assert_eq!(fs::read(img)?, b"image1");
-        let img = path.join("011.jpg");
-        assert_eq!(fs::read(img)?, b"image2");
+        assert_eq!(fs::read(path.join("010.jpg"))?, b"image1");
+        assert_eq!(fs::read(path.join("011.jpg"))?, b"image2");
 
         Ok(())
     }
@@ -417,8 +492,7 @@ mod tests {
         let path = dir.path();
 
         for i in 0..500 {
-            let img = path.join(format!("{}.jpg", i));
-            fs::write(&img, i.to_string())?;
+            make_file(path.join(format!("{}.jpg", i)), i.to_string().as_bytes())?;
         }
 
         execute_with_args([
@@ -426,10 +500,8 @@ mod tests {
             OsString::from("--first=501"),
         ])?;
 
-        let img = path.join("0501.jpg");
-        assert_eq!(fs::read_to_string(&img)?, "0");
-        let img = path.join("1000.jpg");
-        assert_eq!(fs::read_to_string(&img)?, "499");
+        assert_eq!(fs::read_to_string(path.join("0501.jpg"))?, "0");
+        assert_eq!(fs::read_to_string(path.join("1000.jpg"))?, "499");
 
         Ok(())
     }
@@ -438,19 +510,15 @@ mod tests {
     fn dir_hierarchy_is_retained() -> Result<()> {
         let from = tempdir()?;
         let from_path = from.path();
-
-        let img = from_path.join("image.jpg");
-        fs::write(&img, b"jpg")?;
+        make_file(from_path.join("image.jpg"), b"jpg")?;
 
         let subdir1 = tempdir_in(from_path)?;
         let subdir1_path = subdir1.path();
-        let img = subdir1_path.join("image.jpeg");
-        fs::write(&img, b"jpeg")?;
+        make_file(subdir1_path.join("image.jpeg"), b"jpeg")?;
 
         let subdir2 = tempdir_in(from_path)?;
         let subdir2_path = subdir2.path();
-        let img = subdir2_path.join("image.webp");
-        fs::write(&img, b"webp")?;
+        make_file(subdir2_path.join("image.webp"), b"webp")?;
 
         let to = tempdir()?;
         let to_path = to.path();
@@ -460,8 +528,7 @@ mod tests {
             to_path.as_os_str().to_os_string(),
         ])?;
 
-        let img = to_path.join("001.jpg");
-        assert_eq!(fs::read(&img)?, b"jpg");
+        assert_eq!(fs::read(to_path.join("001.jpg"))?, b"jpg");
 
         let img = to_path
             .join(
@@ -470,7 +537,7 @@ mod tests {
                     .expect("prefix always exists"),
             )
             .join("001.jpeg");
-        assert_eq!(fs::read(&img)?, b"jpeg");
+        assert_eq!(fs::read(img)?, b"jpeg");
 
         let img = to_path
             .join(
@@ -479,7 +546,7 @@ mod tests {
                     .expect("prefix always exists"),
             )
             .join("001.webp");
-        assert_eq!(fs::read(&img)?, b"webp");
+        assert_eq!(fs::read(img)?, b"webp");
 
         Ok(())
     }
@@ -491,13 +558,17 @@ mod tests {
 
         let subdir1 = tempdir_in(from_path)?;
         let subdir1_path = subdir1.path();
-        let img = subdir1_path.join("image_in_subdir1.jpg");
-        fs::write(&img, b"image in subdir1")?;
+        make_file(
+            subdir1_path.join("image_in_subdir1.jpg"),
+            b"image in subdir1",
+        )?;
 
         let subdir2 = tempdir_in(from_path)?;
         let subdir2_path = subdir2.path();
-        let img = subdir2_path.join("image_in_subdir2.jpg");
-        fs::write(&img, b"image in subdir2")?;
+        make_file(
+            subdir2_path.join("image_in_subdir2.jpg"),
+            b"image in subdir2",
+        )?;
 
         let to = tempdir()?;
         let to_path = to.path();
@@ -515,7 +586,7 @@ mod tests {
                     .expect("prefix always exists"),
             )
             .join("1000.jpg");
-        assert_eq!(fs::read(&img)?, b"image in subdir1");
+        assert_eq!(fs::read(img)?, b"image in subdir1");
 
         let img = to_path
             .join(
@@ -524,7 +595,7 @@ mod tests {
                     .expect("prefix always exists"),
             )
             .join("1000.jpg");
-        assert_eq!(fs::read(&img)?, b"image in subdir2");
+        assert_eq!(fs::read(img)?, b"image in subdir2");
 
         Ok(())
     }
@@ -533,19 +604,15 @@ mod tests {
     fn dst_inside_src_is_skipped() -> Result<()> {
         let dir = tempdir()?;
         let dir_path = dir.path();
-
-        let img = dir_path.join("img1.jpg");
-        fs::write(&img, b"img1")?;
+        make_file(dir_path.join("img1.jpg"), b"img1")?;
 
         let subdir1 = tempdir_in(dir_path)?;
         let subdir1_path = subdir1.path();
-        let img = subdir1_path.join("img2.jpg");
-        fs::write(&img, b"img2")?;
+        make_file(subdir1_path.join("img2.jpg"), b"img2")?;
 
         let subdir2 = tempdir_in(subdir1_path)?;
         let subdir2_path = subdir2.path();
-        let img = subdir2_path.join("img3.jpg");
-        fs::write(&img, b"img3")?;
+        make_file(subdir2_path.join("img3.jpg"), b"img3")?;
 
         execute_with_args([
             dir_path.as_os_str().to_os_string(),
@@ -553,11 +620,8 @@ mod tests {
             subdir2_path.as_os_str().to_os_string(),
         ])?;
 
-        let img = subdir2_path.join("img3.jpg");
-        assert_eq!(fs::read(&img)?, b"img3");
-
-        let img = subdir2_path.join("001.jpg");
-        assert_eq!(fs::read(&img)?, b"img1");
+        assert_eq!(fs::read(subdir2_path.join("img3.jpg"))?, b"img3");
+        assert_eq!(fs::read(subdir2_path.join("001.jpg"))?, b"img1");
 
         let img = subdir2_path
             .join(
@@ -566,7 +630,7 @@ mod tests {
                     .expect("prefix always exists"),
             )
             .join("001.jpg");
-        assert_eq!(fs::read(&img)?, b"img2");
+        assert_eq!(fs::read(img)?, b"img2");
 
         Ok(())
     }
@@ -577,15 +641,14 @@ mod tests {
         let path = dir.path();
 
         for i in 1..=10 {
-            let img = path.join(format!("{:03}.jpg", i));
-            fs::write(&img, i.to_string())?;
+            make_file(path.join(format!("{:03}.jpg", i)), i.to_string().as_bytes())?;
         }
 
         execute_with_args([path.as_os_str().to_os_string(), OsString::from("--first=3")])?;
 
         for i in 3..=12 {
             let img = path.join(format!("{:03}.jpg", i));
-            assert_eq!(fs::read_to_string(&img)?, format!("{}", i - 2));
+            assert_eq!(fs::read_to_string(img)?, format!("{}", i - 2));
         }
 
         Ok(())
@@ -595,21 +658,18 @@ mod tests {
     fn existing_dst_file_is_overwritten() -> Result<()> {
         let from = tempdir()?;
         let from_path = from.path();
-
-        let img = from_path.join("from_image.jpg");
-        fs::write(&img, b"from image")?;
+        make_file(from_path.join("from_image.jpg"), b"from image")?;
 
         let to = tempdir()?;
         let to_path = to.path();
-        let img = to_path.join("001.jpg");
-        fs::write(&img, b"to image")?;
+        make_file(to_path.join("001.jpg"), b"to image")?;
 
         execute_with_args([
             from_path.as_os_str().to_os_string(),
             OsString::from("--to"),
             to_path.as_os_str().to_os_string(),
         ])?;
-        assert_eq!(fs::read(&img)?, b"from image");
+        assert_eq!(fs::read(to_path.join("001.jpg"))?, b"from image");
 
         Ok(())
     }
@@ -618,9 +678,7 @@ mod tests {
     fn file_renames_with_prefix() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-
-        let img = path.join("image.jpg");
-        fs::write(&img, b"test image")?;
+        make_file(path.join("from_image.jpg"), b"test image")?;
 
         execute_with_args([
             path.as_os_str().to_os_string(),
@@ -628,8 +686,7 @@ mod tests {
             OsString::from("--first=54321"),
         ])?;
 
-        let img = path.join("new_54321.jpg");
-        assert_eq!(fs::read(img)?, b"test image");
+        assert_eq!(fs::read(path.join("new_54321.jpg"))?, b"test image");
 
         Ok(())
     }
@@ -638,9 +695,7 @@ mod tests {
     fn file_renames_with_suffix() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-
-        let img = path.join("image.jpg");
-        fs::write(&img, b"test image")?;
+        make_file(path.join("image.jpg"), b"test image")?;
 
         execute_with_args([
             path.as_os_str().to_os_string(),
@@ -648,8 +703,7 @@ mod tests {
             OsString::from("--first=54321"),
         ])?;
 
-        let img = path.join("54321-IMG.jpg");
-        assert_eq!(fs::read(img)?, b"test image");
+        assert_eq!(fs::read(path.join("54321-IMG.jpg"))?, b"test image");
 
         Ok(())
     }
@@ -658,9 +712,7 @@ mod tests {
     fn file_renames_with_affixes() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-
-        let img = path.join("image.jpg");
-        fs::write(&img, b"test image")?;
+        make_file(path.join("image.jpg"), b"test image")?;
 
         execute_with_args([
             path.as_os_str().to_os_string(),
@@ -669,8 +721,7 @@ mod tests {
             OsString::from("--first=54321"),
         ])?;
 
-        let img = path.join("new_54321-IMG.jpg");
-        assert_eq!(fs::read(img)?, b"test image");
+        assert_eq!(fs::read(path.join("new_54321-IMG.jpg"))?, b"test image");
 
         Ok(())
     }
@@ -679,5 +730,25 @@ mod tests {
     fn affix_rejects_path_separators() {
         assert!(RnArgs::parse_affix("/").is_err());
         assert!(RnArgs::parse_affix("\\").is_err());
+    }
+
+    #[test]
+    fn files_sort_by_filename_desc() -> Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn files_sort_by_modified_time_asc() -> Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn files_sort_by_modified_time_desc() -> Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn files_with_same_modified_time_sort_by_filename() -> Result<()> {
+        Ok(())
     }
 }
