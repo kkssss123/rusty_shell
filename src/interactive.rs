@@ -54,11 +54,9 @@ fn execute(line: &str) -> io::Result<()> {
             let args = rn::RnArgs::try_parse_from(args)
                 .map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))?;
 
-            let path = args.from.as_deref().unwrap_or(".");
-            let from = Path::new(path);
-            let to = Path::new(args.to.as_deref().unwrap_or(path));
-            let first = args.first.unwrap_or_else(|| 1);
-            rn::execute(from, to, first, args.verbose)
+            let from = Path::new(&args.from);
+            let to = Path::new(args.to.as_deref().unwrap_or(&args.from));
+            rn::execute(from, to, args.first, args.verbose)
         }
         _ => {
             println!("command not found: {}", line);

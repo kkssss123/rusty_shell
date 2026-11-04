@@ -4,16 +4,48 @@ use std::path::{Path, PathBuf};
 use std::{fs, result};
 
 #[derive(Parser, Debug)]
-pub(crate) struct RnArgs {
-    pub(crate) from: Option<String>,
+#[command(
+    name = "rn",
+    about = "Recursively renames supported image files using sequential numbers.",
+    long_about = "\
+Recursively searches FROM for supported image files (.jpg, .jpeg, .webp),
+sorts them by filename, and renames them using sequential numbers.
 
-    #[arg(short, long)]
+The original directory structure is preserved. Numbering starts at FIRST
+and restarts in each directory. Filenames are zero-padded to at least
+three digits, with the width expanding when necessary.
+
+If --to is omitted, files are renamed in place. If --to is provided,
+renamed files are written under TO. Existing files in a different
+destination directory may be overwritten.",
+    override_usage = "\
+rn [FROM] [--first <FIRST>] [--verbose]
+       rn [FROM] --to <TO> [--first <FIRST>] [--verbose]",
+    after_help = "\
+Examples:
+  rn
+      Rename image files in the current directory in place.
+
+  rn ./photos
+      Rename image files in ./photos in place.
+
+  rn ./photos --to ./numbered
+      Rename image files from ./photos into ./numbered.
+
+  rn ./photos --first 10 --verbose
+      Start numbering at 10 and print each rename operation."
+)]
+pub(crate) struct RnArgs {
+    #[arg(help = "Source directory to process", default_value = ".")]
+    pub(crate) from: String,
+
+    #[arg(short, long, help = "Destination directory (defaults to FROM)")]
     pub(crate) to: Option<String>,
 
-    #[arg(short, long, value_parser = RnArgs::parse_first)]
-    pub(crate) first: Option<u32>,
+    #[arg(short, long, value_parser = RnArgs::parse_first, default_value = "1", help = "Starting number for each directory")]
+    pub(crate) first: u32,
 
-    #[arg(short, long)]
+    #[arg(short, long, help = "Print each source and destination path")]
     pub(crate) verbose: bool,
 }
 
