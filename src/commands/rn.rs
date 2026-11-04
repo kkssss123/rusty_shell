@@ -6,10 +6,13 @@ use std::{fs, result};
 #[derive(Parser, Debug)]
 #[command(
     name = "rn",
-    about = "Recursively renames supported image files using sequential numbers.",
+    about = "Recursively renames supported media files using sequential numbers.",
     long_about = "\
-Recursively searches FROM for supported image files (.jpg, .jpeg, .webp),
+Recursively searches FROM for supported media files
+(currently .jpg, .jpeg, .webp, .png, and .mp4),
 sorts them by filename, and renames them using sequential numbers.
+
+The supported file extensions may change as the project evolves.
 
 The original directory structure is preserved. Numbering starts at FIRST
 and restarts in each directory. Filenames are zero-padded to at least
@@ -26,35 +29,56 @@ rn [FROM] [OPTIONS]",
     after_help = "\
 Examples:
   rn
-      Rename image files in the current directory in place.
+      Rename supported files in the current directory in place.
 
   rn ./photos --to ./numbered
-      Rename image files from ./photos into ./numbered.
+      Rename supported files from ./photos into ./numbered.
 
   rn ./photos --prefix IMG_ --suffix _edited
       Rename files with a prefix and suffix."
 )]
 pub(crate) struct RnArgs {
     #[arg(
-        help = "Source directory to process (defaults to current directory)",
         default_value = ".",
-        hide_default_value = true
+        hide_default_value = true,
+        help = "Source directory to process (defaults to current directory)"
     )]
     from: PathBuf,
 
     #[arg(short, long, help = "Destination directory (defaults to FROM)")]
     to: Option<PathBuf>,
 
-    #[arg(short, long, value_parser = RnArgs::parse_first, default_value = "1", hide_default_value = true, help = "Starting number for each directory (defaults to 1)")]
+    #[arg(
+        short,
+        long,
+        value_parser = RnArgs::parse_first,
+        default_value = "1",
+        hide_default_value = true,
+        help = "Starting number for each directory (defaults to 1)"
+    )]
     first: u32,
 
     #[arg(short, long, help = "Print each source and destination path")]
     verbose: bool,
 
-    #[arg(short, long, value_parser = RnArgs::parse_affix, default_value = "", hide_default_value = true, help = "Prefix for renamed files")]
+    #[arg(
+        short,
+        long,
+        value_parser = RnArgs::parse_affix,
+        default_value = "",
+        hide_default_value = true,
+        help = "Prefix for renamed files"
+    )]
     prefix: String,
 
-    #[arg(short, long, value_parser = RnArgs::parse_affix, default_value = "", hide_default_value = true, help = "Suffix for renamed files")]
+    #[arg(
+        short,
+        long,
+        value_parser = RnArgs::parse_affix,
+        default_value = "",
+        hide_default_value = true,
+        help = "Suffix for renamed files"
+    )]
     suffix: String,
 }
 
@@ -167,6 +191,7 @@ fn rename_files(paths: RenamePaths, context: &RenameContext) -> Result<()> {
     for entry in fs::read_dir(&paths.from)? {
         let entry = entry?;
         let path = dunce::canonicalize(entry.path())?;
+        // entry.metadata()?.modified()?;
 
         if path.is_dir() {
             if (context.is_subdir && path == context.to_root) || path == context.backup_root {
@@ -263,7 +288,7 @@ fn move_backup_to_dst(backup: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-static TARGET: [&str; 3] = ["jpg", "jpeg", "webp"];
+static TARGET: [&str; 5] = ["jpg", "jpeg", "webp", "png", "mp4"];
 
 fn is_target(file_name: &str) -> bool {
     TARGET
