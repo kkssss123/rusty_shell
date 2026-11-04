@@ -3,7 +3,6 @@ use clap::Parser;
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
 use std::io::{self, Error, ErrorKind};
-use std::path::Path;
 
 pub fn run() -> Result<()> {
     let mut rl = DefaultEditor::new()?;
@@ -53,10 +52,7 @@ fn execute(line: &str) -> io::Result<()> {
         "rn" => {
             let args = rn::RnArgs::try_parse_from(args)
                 .map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))?;
-
-            let from = Path::new(&args.from);
-            let to = Path::new(args.to.as_deref().unwrap_or(&args.from));
-            rn::execute(from, to, args.first, args.verbose)
+            rn::execute(args)
         }
         _ => {
             println!("command not found: {}", line);

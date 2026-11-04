@@ -17,36 +17,45 @@ three digits, with the width expanding when necessary.
 
 If --to is omitted, files are renamed in place. If --to is provided,
 renamed files are written under TO. Existing files in a different
-destination directory may be overwritten.",
+destination directory may be overwritten.
+
+PREFIX and SUFFIX are added before and after the sequence number,
+respectively. Both are optional and default to an empty string.",
     override_usage = "\
-rn [FROM] [--first <FIRST>] [--verbose]
-       rn [FROM] --to <TO> [--first <FIRST>] [--verbose]",
+rn [FROM] [OPTIONS]",
     after_help = "\
 Examples:
   rn
       Rename image files in the current directory in place.
 
-  rn ./photos
-      Rename image files in ./photos in place.
-
   rn ./photos --to ./numbered
       Rename image files from ./photos into ./numbered.
 
-  rn ./photos --first 10 --verbose
-      Start numbering at 10 and print each rename operation."
+  rn ./photos --prefix IMG_ --suffix _edited
+      Rename files with a prefix and suffix."
 )]
 pub(crate) struct RnArgs {
-    #[arg(help = "Source directory to process", default_value = ".")]
-    pub(crate) from: String,
+    #[arg(
+        help = "Source directory to process (defaults to current directory)",
+        default_value = ".",
+        hide_default_value = true
+    )]
+    from: PathBuf,
 
     #[arg(short, long, help = "Destination directory (defaults to FROM)")]
-    pub(crate) to: Option<String>,
+    to: Option<PathBuf>,
 
-    #[arg(short, long, value_parser = RnArgs::parse_first, default_value = "1", help = "Starting number for each directory")]
-    pub(crate) first: u32,
+    #[arg(short, long, value_parser = RnArgs::parse_first, default_value = "1", hide_default_value = true, help = "Starting number for each directory (defaults to 1)")]
+    first: u32,
 
     #[arg(short, long, help = "Print each source and destination path")]
-    pub(crate) verbose: bool,
+    verbose: bool,
+
+    #[arg(short, long, value_parser = RnArgs::parse_affix, default_value = "", hide_default_value = true, help = "Prefix for renamed files")]
+    prefix: String,
+
+    #[arg(short, long, value_parser = RnArgs::parse_affix, default_value = "", hide_default_value = true, help = "Suffix for renamed files")]
+    suffix: String,
 }
 
 impl RnArgs {
@@ -54,6 +63,13 @@ impl RnArgs {
         value
             .parse()
             .map_err(|_| "first should be 0 or more integer.".to_string())
+    }
+
+    fn parse_affix(value: &str) -> result::Result<String, String> {
+        if value.contains("/") || value.contains("\\") {
+            return Err("prefix/suffix should not contain \\ or /.".to_string());
+        }
+        Ok(value.to_string())
     }
 }
 
@@ -99,6 +115,8 @@ struct RenameContext {
     is_subdir: bool,
     first: u32,
     verbose: bool,
+    prefix: String,
+    suffix: String,
 }
 
 impl RenameContext {
@@ -108,6 +126,8 @@ impl RenameContext {
         backup_root: PathBuf,
         first: u32,
         verbose: bool,
+        prefix: String,
+        suffix: String,
     ) -> RenameContext {
         let is_subdir = to_root != from && to_root.starts_with(&from);
 
@@ -117,18 +137,24 @@ impl RenameContext {
             is_subdir,
             first,
             verbose,
+            prefix,
+            suffix,
         }
     }
 }
 
-pub(crate) fn execute(from: &Path, to: &Path, first: u32, verbose: bool) -> Result<()> {
+pub(crate) fn execute(args: RnArgs) -> Result<()> {
+    let from = args.from.as_path();
+    let to = args.to.as_deref().unwrap_or(from);
     let paths = RenamePaths::setup(from, to)?;
     let context = RenameContext::new(
         &paths.from,
         paths.to.clone(),
         paths.backup.clone(),
-        first,
-        verbose,
+        args.first,
+        args.verbose,
+        args.prefix,
+        args.suffix,
     );
     rename_files(paths, &context)?;
     fs::remove_dir(&context.backup_root)?;
@@ -192,7 +218,13 @@ fn copy_and_rename_to_backup(
         .max(3);
     for f in file_names {
         let ext = extension(&f);
-        let new_name = format!("{:0width$}.{ext}", count, width = width);
+        let new_name = format!(
+            "{}{:0width$}{}.{ext}",
+            context.prefix,
+            count,
+            context.suffix,
+            width = width
+        );
         if context.verbose {
             println!(
                 "will be renamed to: {} -> {}",
@@ -252,7 +284,15 @@ fn extension(file_name: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use tempfile::*;
+
+    fn execute_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> {
+        let args = std::iter::once(OsString::from("rn")).chain(args);
+        let args = RnArgs::try_parse_from(args).expect("arguments should parsed correctly");
+
+        execute(args)
+    }
 
     #[test]
     fn file_renames_to_number() -> Result<()> {
@@ -262,7 +302,7 @@ mod tests {
         let img_before = path.join("image.jpg");
         fs::write(&img_before, b"test image")?;
 
-        execute(path, path, 1, false)?;
+        execute_with_args([path.as_os_str().to_os_string()])?;
 
         let img_after = path.join("001.jpg");
 
@@ -284,7 +324,7 @@ mod tests {
         let img = path.join("image2.jpg");
         fs::write(&img, b"image2")?;
 
-        execute(path, path, 1, false)?;
+        execute_with_args([path.as_os_str().to_os_string()])?;
 
         let img = path.join("001.jpg");
         assert_eq!(fs::read(img)?, b"image1");
@@ -310,7 +350,7 @@ mod tests {
         let txt = path.join("nontarget.txt");
         fs::write(&txt, b"never changed")?;
 
-        execute(path, path, 1, false)?;
+        execute_with_args([path.as_os_str().to_os_string()])?;
 
         let jpg = path.join("001.jpg");
         assert_eq!(fs::read(jpg)?, b"jpg");
@@ -333,7 +373,10 @@ mod tests {
         let img = path.join("image2.jpg");
         fs::write(&img, b"image2")?;
 
-        execute(path, path, 10, false)?;
+        execute_with_args([
+            path.as_os_str().to_os_string(),
+            OsString::from("--first=10"),
+        ])?;
 
         let img = path.join("010.jpg");
         assert_eq!(fs::read(img)?, b"image1");
@@ -353,7 +396,11 @@ mod tests {
             fs::write(&img, i.to_string())?;
         }
 
-        execute(path, path, 501, false)?;
+        execute_with_args([
+            path.as_os_str().to_os_string(),
+            OsString::from("--first=501"),
+        ])?;
+
         let img = path.join("0501.jpg");
         assert_eq!(fs::read_to_string(&img)?, "0");
         let img = path.join("1000.jpg");
@@ -382,7 +429,11 @@ mod tests {
 
         let to = tempdir()?;
         let to_path = to.path();
-        execute(from_path, to_path, 1, false)?;
+        execute_with_args([
+            from_path.as_os_str().to_os_string(),
+            OsString::from("--to"),
+            to_path.as_os_str().to_os_string(),
+        ])?;
 
         let img = to_path.join("001.jpg");
         assert_eq!(fs::read(&img)?, b"jpg");
@@ -425,7 +476,12 @@ mod tests {
 
         let to = tempdir()?;
         let to_path = to.path();
-        execute(from_path, to_path, 1000, false)?;
+        execute_with_args([
+            from_path.as_os_str().to_os_string(),
+            OsString::from("--to"),
+            to_path.as_os_str().to_os_string(),
+            OsString::from("--first=1000"),
+        ])?;
 
         let img = to_path
             .join(
@@ -466,7 +522,11 @@ mod tests {
         let img = subdir2_path.join("img3.jpg");
         fs::write(&img, b"img3")?;
 
-        execute(dir_path, subdir2_path, 1, false)?;
+        execute_with_args([
+            dir_path.as_os_str().to_os_string(),
+            OsString::from("--to"),
+            subdir2_path.as_os_str().to_os_string(),
+        ])?;
 
         let img = subdir2_path.join("img3.jpg");
         assert_eq!(fs::read(&img)?, b"img3");
@@ -496,7 +556,8 @@ mod tests {
             fs::write(&img, i.to_string())?;
         }
 
-        execute(path, path, 3, false)?;
+        execute_with_args([path.as_os_str().to_os_string(), OsString::from("--first=3")])?;
+
         for i in 3..=12 {
             let img = path.join(format!("{:03}.jpg", i));
             assert_eq!(fs::read_to_string(&img)?, format!("{}", i - 2));
@@ -518,9 +579,80 @@ mod tests {
         let img = to_path.join("001.jpg");
         fs::write(&img, b"to image")?;
 
-        execute(from_path, to_path, 1, false)?;
+        execute_with_args([
+            from_path.as_os_str().to_os_string(),
+            OsString::from("--to"),
+            to_path.as_os_str().to_os_string(),
+        ])?;
         assert_eq!(fs::read(&img)?, b"from image");
 
         Ok(())
+    }
+
+    #[test]
+    fn file_renames_with_prefix() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path();
+
+        let img = path.join("image.jpg");
+        fs::write(&img, b"test image")?;
+
+        execute_with_args([
+            path.as_os_str().to_os_string(),
+            OsString::from("--prefix=new_"),
+            OsString::from("--first=54321"),
+        ])?;
+
+        let img = path.join("new_54321.jpg");
+        assert_eq!(fs::read(img)?, b"test image");
+
+        Ok(())
+    }
+
+    #[test]
+    fn file_renames_with_suffix() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path();
+
+        let img = path.join("image.jpg");
+        fs::write(&img, b"test image")?;
+
+        execute_with_args([
+            path.as_os_str().to_os_string(),
+            OsString::from("--suffix=-IMG"),
+            OsString::from("--first=54321"),
+        ])?;
+
+        let img = path.join("54321-IMG.jpg");
+        assert_eq!(fs::read(img)?, b"test image");
+
+        Ok(())
+    }
+
+    #[test]
+    fn file_renames_with_affixes() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path();
+
+        let img = path.join("image.jpg");
+        fs::write(&img, b"test image")?;
+
+        execute_with_args([
+            path.as_os_str().to_os_string(),
+            OsString::from("--prefix=new_"),
+            OsString::from("--suffix=-IMG"),
+            OsString::from("--first=54321"),
+        ])?;
+
+        let img = path.join("new_54321-IMG.jpg");
+        assert_eq!(fs::read(img)?, b"test image");
+
+        Ok(())
+    }
+
+    #[test]
+    fn affix_rejects_path_separators() {
+        assert!(RnArgs::parse_affix("/").is_err());
+        assert!(RnArgs::parse_affix("\\").is_err());
     }
 }
