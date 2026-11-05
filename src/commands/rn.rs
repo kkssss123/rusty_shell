@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use std::{fs, result};
 
+const TARGET_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "webp", "png", "mp4"];
+
 #[derive(Parser, Debug)]
 #[command(
     name = "rn",
@@ -153,7 +155,6 @@ impl RenamePaths {
 
         fs::create_dir(&backup)?;
         let backup = dunce::canonicalize(&backup)?;
-
         Ok(RenamePaths { from, to, backup })
     }
 
@@ -231,7 +232,6 @@ impl TargetFile {
             return Ok(None);
         }
         let modified = entry.metadata()?.modified()?;
-
         Ok(Some(TargetFile { name, modified }))
     }
 }
@@ -309,18 +309,17 @@ fn collect_entries(paths: &RenamePaths, context: &RenameContext) -> Result<Entri
             entries.target_files.push(target_file);
         }
     }
-
     Ok(entries)
 }
 
 fn sort_files(target_files: &mut [TargetFile], sort_by: &SortBy) {
     target_files.sort_by(|a, b| {
         let a = a.name.to_lowercase();
-        let a = filename(&a);
         let b = b.name.to_lowercase();
-        let b = filename(&b);
 
-        alphanumeric_sort::compare_str(a, b)
+        let name_a = filename(&a);
+        let name_b = filename(&b);
+        alphanumeric_sort::compare_str(name_a, name_b).then_with(|| alphanumeric_sort::compare_str(a, b))
     });
 }
 
@@ -382,10 +381,8 @@ fn move_backup_to_dst(backup: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-static TARGET: [&str; 5] = ["jpg", "jpeg", "webp", "png", "mp4"];
-
 fn is_target(file_name: &str) -> bool {
-    TARGET
+    TARGET_EXTENSIONS
         .iter()
         .any(|ext| extension(file_name).eq_ignore_ascii_case(ext))
 }
@@ -404,31 +401,20 @@ fn extension(file_name: &str) -> &str {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::fs::OpenOptions;
+    use std::time::Duration;
     use tempfile::*;
-
-    fn execute_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> {
-        let args = std::iter::once(OsString::from("rn")).chain(args);
-        let args = RnArgs::try_parse_from(args).expect("arguments should parsed correctly");
-
-        execute(args)
-    }
-
-    fn make_file<'a>(path: PathBuf, content: &[u8]) -> Result<PathBuf> {
-        fs::write(&path, content)?;
-        Ok(path)
-    }
 
     #[test]
     fn file_renames_to_number() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-        let img_before = make_file(path.join("image.jpg"), b"test image")?;
+        let img_before = create_file(path.join("image.jpg"), b"test image")?;
 
         execute_with_args([path.as_os_str().to_os_string()])?;
 
         assert!(!img_before.exists());
         assert_eq!(fs::read(path.join("001.jpg"))?, b"test image");
-
         Ok(())
     }
 
@@ -436,16 +422,15 @@ mod tests {
     fn multiple_files_renamed_in_order() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-        make_file(path.join("image1.jpg"), b"image1")?;
-        make_file(path.join("image10.jpg"), b"image10")?;
-        make_file(path.join("image2.jpg"), b"image2")?;
+        create_file(path.join("image1.jpg"), b"image1")?;
+        create_file(path.join("image10.jpg"), b"image10")?;
+        create_file(path.join("image2.jpg"), b"image2")?;
 
         execute_with_args([path.as_os_str().to_os_string()])?;
 
         assert_eq!(fs::read(path.join("001.jpg"))?, b"image1");
         assert_eq!(fs::read(path.join("002.jpg"))?, b"image2");
         assert_eq!(fs::read(path.join("003.jpg"))?, b"image10");
-
         Ok(())
     }
 
@@ -453,10 +438,10 @@ mod tests {
     fn non_target_files_untouched() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-        make_file(path.join("image1.jpg"), b"jpg")?;
-        make_file(path.join("image2.jpeg"), b"jpeg")?;
-        make_file(path.join("image3.webp"), b"webp")?;
-        let txt = make_file(path.join("not_target.txt"), b"never changed")?;
+        create_file(path.join("image1.jpg"), b"jpg")?;
+        create_file(path.join("image2.jpeg"), b"jpeg")?;
+        create_file(path.join("image3.webp"), b"webp")?;
+        let txt = create_file(path.join("not_target.txt"), b"never changed")?;
 
         execute_with_args([path.as_os_str().to_os_string()])?;
 
@@ -464,7 +449,6 @@ mod tests {
         assert_eq!(fs::read(path.join("002.jpeg"))?, b"jpeg");
         assert_eq!(fs::read(path.join("003.webp"))?, b"webp");
         assert_eq!(fs::read(txt)?, b"never changed");
-
         Ok(())
     }
 
@@ -472,8 +456,8 @@ mod tests {
     fn numbering_starts_from_first() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-        make_file(path.join("image1.jpg"), b"image1")?;
-        make_file(path.join("image2.jpg"), b"image2")?;
+        create_file(path.join("image1.jpg"), b"image1")?;
+        create_file(path.join("image2.jpg"), b"image2")?;
 
         execute_with_args([
             path.as_os_str().to_os_string(),
@@ -482,7 +466,6 @@ mod tests {
 
         assert_eq!(fs::read(path.join("010.jpg"))?, b"image1");
         assert_eq!(fs::read(path.join("011.jpg"))?, b"image2");
-
         Ok(())
     }
 
@@ -492,7 +475,7 @@ mod tests {
         let path = dir.path();
 
         for i in 0..500 {
-            make_file(path.join(format!("{}.jpg", i)), i.to_string().as_bytes())?;
+            create_file(path.join(format!("{}.jpg", i)), i.to_string().as_bytes())?;
         }
 
         execute_with_args([
@@ -502,7 +485,6 @@ mod tests {
 
         assert_eq!(fs::read_to_string(path.join("0501.jpg"))?, "0");
         assert_eq!(fs::read_to_string(path.join("1000.jpg"))?, "499");
-
         Ok(())
     }
 
@@ -510,15 +492,15 @@ mod tests {
     fn dir_hierarchy_is_retained() -> Result<()> {
         let from = tempdir()?;
         let from_path = from.path();
-        make_file(from_path.join("image.jpg"), b"jpg")?;
+        create_file(from_path.join("image.jpg"), b"jpg")?;
 
         let subdir1 = tempdir_in(from_path)?;
         let subdir1_path = subdir1.path();
-        make_file(subdir1_path.join("image.jpeg"), b"jpeg")?;
+        create_file(subdir1_path.join("image.jpeg"), b"jpeg")?;
 
         let subdir2 = tempdir_in(from_path)?;
         let subdir2_path = subdir2.path();
-        make_file(subdir2_path.join("image.webp"), b"webp")?;
+        create_file(subdir2_path.join("image.webp"), b"webp")?;
 
         let to = tempdir()?;
         let to_path = to.path();
@@ -547,7 +529,6 @@ mod tests {
             )
             .join("001.webp");
         assert_eq!(fs::read(img)?, b"webp");
-
         Ok(())
     }
 
@@ -558,14 +539,14 @@ mod tests {
 
         let subdir1 = tempdir_in(from_path)?;
         let subdir1_path = subdir1.path();
-        make_file(
+        create_file(
             subdir1_path.join("image_in_subdir1.jpg"),
             b"image in subdir1",
         )?;
 
         let subdir2 = tempdir_in(from_path)?;
         let subdir2_path = subdir2.path();
-        make_file(
+        create_file(
             subdir2_path.join("image_in_subdir2.jpg"),
             b"image in subdir2",
         )?;
@@ -596,7 +577,6 @@ mod tests {
             )
             .join("1000.jpg");
         assert_eq!(fs::read(img)?, b"image in subdir2");
-
         Ok(())
     }
 
@@ -604,15 +584,15 @@ mod tests {
     fn dst_inside_src_is_skipped() -> Result<()> {
         let dir = tempdir()?;
         let dir_path = dir.path();
-        make_file(dir_path.join("img1.jpg"), b"img1")?;
+        create_file(dir_path.join("img1.jpg"), b"img1")?;
 
         let subdir1 = tempdir_in(dir_path)?;
         let subdir1_path = subdir1.path();
-        make_file(subdir1_path.join("img2.jpg"), b"img2")?;
+        create_file(subdir1_path.join("img2.jpg"), b"img2")?;
 
         let subdir2 = tempdir_in(subdir1_path)?;
         let subdir2_path = subdir2.path();
-        make_file(subdir2_path.join("img3.jpg"), b"img3")?;
+        create_file(subdir2_path.join("img3.jpg"), b"img3")?;
 
         execute_with_args([
             dir_path.as_os_str().to_os_string(),
@@ -631,7 +611,6 @@ mod tests {
             )
             .join("001.jpg");
         assert_eq!(fs::read(img)?, b"img2");
-
         Ok(())
     }
 
@@ -641,7 +620,7 @@ mod tests {
         let path = dir.path();
 
         for i in 1..=10 {
-            make_file(path.join(format!("{:03}.jpg", i)), i.to_string().as_bytes())?;
+            create_file(path.join(format!("{:03}.jpg", i)), i.to_string().as_bytes())?;
         }
 
         execute_with_args([path.as_os_str().to_os_string(), OsString::from("--first=3")])?;
@@ -650,7 +629,6 @@ mod tests {
             let img = path.join(format!("{:03}.jpg", i));
             assert_eq!(fs::read_to_string(img)?, format!("{}", i - 2));
         }
-
         Ok(())
     }
 
@@ -658,11 +636,11 @@ mod tests {
     fn existing_dst_file_is_overwritten() -> Result<()> {
         let from = tempdir()?;
         let from_path = from.path();
-        make_file(from_path.join("from_image.jpg"), b"from image")?;
+        create_file(from_path.join("from_image.jpg"), b"from image")?;
 
         let to = tempdir()?;
         let to_path = to.path();
-        make_file(to_path.join("001.jpg"), b"to image")?;
+        create_file(to_path.join("001.jpg"), b"to image")?;
 
         execute_with_args([
             from_path.as_os_str().to_os_string(),
@@ -670,7 +648,6 @@ mod tests {
             to_path.as_os_str().to_os_string(),
         ])?;
         assert_eq!(fs::read(to_path.join("001.jpg"))?, b"from image");
-
         Ok(())
     }
 
@@ -678,7 +655,7 @@ mod tests {
     fn file_renames_with_prefix() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-        make_file(path.join("from_image.jpg"), b"test image")?;
+        create_file(path.join("from_image.jpg"), b"test image")?;
 
         execute_with_args([
             path.as_os_str().to_os_string(),
@@ -687,7 +664,6 @@ mod tests {
         ])?;
 
         assert_eq!(fs::read(path.join("new_54321.jpg"))?, b"test image");
-
         Ok(())
     }
 
@@ -695,7 +671,7 @@ mod tests {
     fn file_renames_with_suffix() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-        make_file(path.join("image.jpg"), b"test image")?;
+        create_file(path.join("image.jpg"), b"test image")?;
 
         execute_with_args([
             path.as_os_str().to_os_string(),
@@ -704,7 +680,6 @@ mod tests {
         ])?;
 
         assert_eq!(fs::read(path.join("54321-IMG.jpg"))?, b"test image");
-
         Ok(())
     }
 
@@ -712,7 +687,7 @@ mod tests {
     fn file_renames_with_affixes() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
-        make_file(path.join("image.jpg"), b"test image")?;
+        create_file(path.join("image.jpg"), b"test image")?;
 
         execute_with_args([
             path.as_os_str().to_os_string(),
@@ -722,7 +697,6 @@ mod tests {
         ])?;
 
         assert_eq!(fs::read(path.join("new_54321-IMG.jpg"))?, b"test image");
-
         Ok(())
     }
 
@@ -734,21 +708,107 @@ mod tests {
 
     #[test]
     fn files_sort_by_filename_desc() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path();
+        create_file(path.join("image1.jpg"), b"image1")?;
+        create_file(path.join("image10.jpg"), b"image10")?;
+        create_file(path.join("image2.jpg"), b"image2")?;
+
+        execute_with_args([path.as_os_str().to_os_string()])?;
+
+        assert_eq!(fs::read(path.join("001.jpg"))?, b"image10");
+        assert_eq!(fs::read(path.join("002.jpg"))?, b"image2");
+        assert_eq!(fs::read(path.join("003.jpg"))?, b"image1");
         Ok(())
     }
 
     #[test]
     fn files_sort_by_modified_time_asc() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path();
+        create_file_with_mtime(path.join("image1.jpg"), b"image1", 20)?;
+        create_file_with_mtime(path.join("image2.jpg"), b"image2", 30)?;
+        create_file_with_mtime(path.join("image3.jpg"), b"image3", 10)?;
+
+        execute_with_args([
+            path.as_os_str().to_os_string(),
+            OsString::from("--sort-by-modified-time"),
+        ])?;
+            
+        assert_eq!(fs::read(path.join("001.jpg"))?, b"image3");
+        assert_eq!(fs::read(path.join("002.jpg"))?, b"image1");
+        assert_eq!(fs::read(path.join("003.jpg"))?, b"image2");
         Ok(())
     }
 
     #[test]
     fn files_sort_by_modified_time_desc() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path();
+        create_file_with_mtime(path.join("image1.jpg"), b"image1", 20)?;
+        create_file_with_mtime(path.join("image2.jpg"), b"image2", 30)?;
+        create_file_with_mtime(path.join("image3.jpg"), b"image3", 10)?;
+
+        execute_with_args([
+            path.as_os_str().to_os_string(),
+            OsString::from("--sort-by-modified-time-desc"),
+        ])?;
+            
+        assert_eq!(fs::read(path.join("001.jpg"))?, b"image2");
+        assert_eq!(fs::read(path.join("002.jpg"))?, b"image1");
+        assert_eq!(fs::read(path.join("003.jpg"))?, b"image3");
         Ok(())
     }
 
     #[test]
     fn files_with_same_modified_time_sort_by_filename() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path();
+        create_file_with_mtime(path.join("video10.mp4"), b"video10", 60)?;
+        create_file_with_mtime(path.join("video7.mp4"), b"video7", 30)?;
+        create_file_with_mtime(path.join("video3.mp4"), b"video3", 60)?;
+
+        execute_with_args([
+            path.as_os_str().to_os_string(),
+            OsString::from("--sort-by-modified-time"),
+        ])?;
+
+        assert_eq!(fs::read(path.join("001.mp4"))?, b"video7");
+        assert_eq!(fs::read(path.join("002.mp4"))?, b"video3");
+        assert_eq!(fs::read(path.join("003.mp4"))?, b"image10");
+
+        let dir = tempdir()?;
+        let path = dir.path();
+        create_file_with_mtime(path.join("video10.mp4"), b"video10", 60)?;
+        create_file_with_mtime(path.join("video7.mp4"), b"video7", 30)?;
+        create_file_with_mtime(path.join("video3.mp4"), b"video3", 60)?;
+
+        execute_with_args([
+            path.as_os_str().to_os_string(),
+            OsString::from("--sort-by-modified-time"),
+        ])?;
+
+        assert_eq!(fs::read(path.join("001.mp4"))?, b"video10");
+        assert_eq!(fs::read(path.join("002.mp4"))?, b"video3");
+        assert_eq!(fs::read(path.join("003.mp4"))?, b"image7");
         Ok(())
+    }
+
+    fn execute_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> {
+        let args = std::iter::once(OsString::from("rn")).chain(args);
+        let args = RnArgs::try_parse_from(args).expect("arguments should parsed correctly");
+
+        execute(args)
+    }
+
+    fn create_file(path: PathBuf, content: &[u8]) -> Result<PathBuf> {
+        fs::write(&path, content)?;
+        Ok(path)
+    }
+
+    fn create_file_with_mtime(path: PathBuf, content: &[u8], secs: u64) -> Result<PathBuf> {
+        fs::write(&path, content)?;
+        OpenOptions::new().write(true).open(&path)?.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))?;
+        Ok(path)
     }
 }
