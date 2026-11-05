@@ -183,7 +183,7 @@ impl RenamePaths {
     }
 }
 
-enum SortBy {
+pub enum SortBy {
     FileName { desc: bool },
     Mtime { desc: bool },
 }
@@ -234,9 +234,11 @@ impl RenameContext {
     }
 }
 
-struct TargetFile {
-    name: String,
-    mtime: SystemTime,
+#[derive(Clone)]
+pub struct TargetFile {
+    pub name: String,
+    pub name_lower: String,
+    pub mtime: SystemTime,
 }
 
 impl TargetFile {
@@ -245,8 +247,9 @@ impl TargetFile {
         if !is_target(&name) {
             return Ok(None);
         }
+        let name_lower = name.to_lowercase();
         let mtime = entry.metadata()?.modified()?;
-        Ok(Some(TargetFile { name, mtime }))
+        Ok(Some(TargetFile { name, name_lower, mtime }))
     }
 }
 
@@ -326,7 +329,7 @@ fn collect_entries(paths: &RenamePaths, context: &RenameContext) -> Result<Entri
     Ok(entries)
 }
 
-fn sort_files(target_files: &mut [TargetFile], sort_by: &SortBy) {
+pub fn sort_files(target_files: &mut [TargetFile], sort_by: &SortBy) {
     match sort_by {
         FileName { desc } => {
             target_files.sort_by(|a, b| {
@@ -350,11 +353,11 @@ fn sort_files(target_files: &mut [TargetFile], sort_by: &SortBy) {
 }
 
 fn order_by_filename(a: &TargetFile, b: &TargetFile) -> cmp::Ordering {
-    let a = a.name.to_lowercase();
-    let b = b.name.to_lowercase();
-    let fa = filename(&a);
-    let fb = filename(&b);
-    alphanumeric_sort::compare_str(fa, fb).then_with(|| alphanumeric_sort::compare_str(a, b))
+    let fa = filename(&a.name_lower);
+    let fb = filename(&b.name_lower);
+    
+    alphanumeric_sort::compare_str(fa, fb)
+        .then_with(|| alphanumeric_sort::compare_str(&a.name_lower, &b.name_lower))
 }
 
 fn copy_and_rename_to_backup(
@@ -814,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn files_with_same_mtime_sort_by_filename_desc() -> Result<()> {
+    fn files_with_same_mtime_desc_sort_by_filename() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
         create_file_with_mtime(path.join("video10.mp4"), b"video10", 60)?;
@@ -826,8 +829,8 @@ mod tests {
             OsString::from("--sort-by-mtime-desc"),
         ])?;
 
-        assert_eq!(fs::read(path.join("001.mp4"))?, b"video10");
-        assert_eq!(fs::read(path.join("002.mp4"))?, b"video3");
+        assert_eq!(fs::read(path.join("001.mp4"))?, b"video3");
+        assert_eq!(fs::read(path.join("002.mp4"))?, b"video10");
         assert_eq!(fs::read(path.join("003.mp4"))?, b"video7");
         Ok(())
     }
