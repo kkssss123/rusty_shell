@@ -1,9 +1,10 @@
+use self::SortBy::*;
 use clap::Parser;
 use std::fs::DirEntry;
 use std::io::{Error, ErrorKind, Result};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use std::{fs, result};
+use std::{cmp, fs, result};
 
 const TARGET_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "webp", "png", "mp4"];
 
@@ -16,6 +17,12 @@ Recursively searches FROM for supported media files
 (currently .jpg, .jpeg, .webp, .png, and .mp4),
 sorts them by filename, and renames them using sequential numbers.
 
+By default, files are sorted by filename in ascending order.
+Use --reverse to sort by filename in descending order.
+Use --sort-by-mtime to sort by modification time in ascending order,
+or --sort-by-mtime-desc to sort in descending order.
+Files with the same modification time are sorted by filename.
+
 The supported file extensions may change as the project evolves.
 
 The original directory structure is preserved. Numbering starts at FIRST
@@ -27,7 +34,7 @@ renamed files are written under TO. Existing files in a different
 destination directory may be overwritten.
 
 PREFIX and SUFFIX are added before and after the sequence number,
-respectively. Both are optional and default to an empty string.",
+respectively. Both are optional and default to an empty strings.",
     override_usage = "\
 rn [FROM] [OPTIONS]",
     after_help = "\
@@ -37,6 +44,15 @@ Examples:
 
   rn ./photos --to ./numbered
       Rename supported files from ./photos into ./numbered.
+
+  rn ./photos --reverse
+      Rename files in descending filename order.
+
+  rn ./photos --sort-by-mtime
+      Rename files in ascending modification-time order.
+
+  rn ./photos --sort-by-mtime-desc
+      Rename files in descending modification-time order.
 
   rn ./photos --prefix IMG_ --suffix _edited
       Rename files with a prefix and suffix."
@@ -88,8 +104,8 @@ pub(crate) struct RnArgs {
     #[arg(
         long,
         conflicts_with_all = [
-            "sort_by_modified_time",
-            "sort_by_modified_time_desc",
+            "sort_by_mtime",
+            "sort_by_mtime_desc",
         ],
         help = "Sort by file name in descending order"
     )]
@@ -99,33 +115,33 @@ pub(crate) struct RnArgs {
         long,
         conflicts_with_all = [
             "reverse",
-            "sort_by_modified_time_desc",
+            "sort_by_mtime_desc",
         ],
         help = "Sort by modification time in ascending order"
     )]
-    sort_by_modified_time: bool,
+    sort_by_mtime: bool,
 
     #[arg(
         long,
         conflicts_with_all = [
             "reverse",
-            "sort_by_modified_time",
+            "sort_by_mtime",
         ],
         help = "Sort by modification time in descending order"
     )]
-    sort_by_modified_time_desc: bool,
+    sort_by_mtime_desc: bool,
 }
 
 impl RnArgs {
     fn parse_first(value: &str) -> result::Result<u32, String> {
         value
             .parse()
-            .map_err(|_| "first should be 0 or more integer.".to_string())
+            .map_err(|_| "first must be a non-negative integer.".to_string())
     }
 
     fn parse_affix(value: &str) -> result::Result<String, String> {
         if value.contains("/") || value.contains("\\") {
-            return Err("prefix/suffix should not contain \\ or /.".to_string());
+            return Err("prefix/suffix must not contain \\ or /.".to_string());
         }
         Ok(value.to_string())
     }
@@ -169,7 +185,7 @@ impl RenamePaths {
 
 enum SortBy {
     FileName { desc: bool },
-    ModificationTime { desc: bool },
+    Mtime { desc: bool },
 }
 
 struct RenameContext {
@@ -193,18 +209,16 @@ impl RenameContext {
         prefix: String,
         suffix: String,
         reverse: bool,
-        sort_by_modified_time: bool,
-        sort_by_modified_time_desc: bool,
+        sort_by_mtime: bool,
+        sort_by_mtime_desc: bool,
     ) -> RenameContext {
         let is_subdir = to_root != from && to_root.starts_with(&from);
-        let sort_by = if reverse {
-            SortBy::FileName { desc: true }
-        } else if sort_by_modified_time {
-            SortBy::ModificationTime { desc: false }
-        } else if sort_by_modified_time_desc {
-            SortBy::ModificationTime { desc: true }
+        let sort_by = if sort_by_mtime {
+            SortBy::Mtime { desc: false }
+        } else if sort_by_mtime_desc {
+            SortBy::Mtime { desc: true }
         } else {
-            SortBy::FileName { desc: false }
+            SortBy::FileName { desc: reverse }
         };
 
         RenameContext {
@@ -222,7 +236,7 @@ impl RenameContext {
 
 struct TargetFile {
     name: String,
-    modified: SystemTime,
+    mtime: SystemTime,
 }
 
 impl TargetFile {
@@ -231,8 +245,8 @@ impl TargetFile {
         if !is_target(&name) {
             return Ok(None);
         }
-        let modified = entry.metadata()?.modified()?;
-        Ok(Some(TargetFile { name, modified }))
+        let mtime = entry.metadata()?.modified()?;
+        Ok(Some(TargetFile { name, mtime }))
     }
 }
 
@@ -261,8 +275,8 @@ pub(crate) fn execute(args: RnArgs) -> Result<()> {
         args.prefix,
         args.suffix,
         args.reverse,
-        args.sort_by_modified_time,
-        args.sort_by_modified_time_desc,
+        args.sort_by_mtime,
+        args.sort_by_mtime_desc,
     );
     rename_files(paths, &context)?;
     fs::remove_dir(&context.backup_root)?;
@@ -313,14 +327,34 @@ fn collect_entries(paths: &RenamePaths, context: &RenameContext) -> Result<Entri
 }
 
 fn sort_files(target_files: &mut [TargetFile], sort_by: &SortBy) {
-    target_files.sort_by(|a, b| {
-        let a = a.name.to_lowercase();
-        let b = b.name.to_lowercase();
+    match sort_by {
+        FileName { desc } => {
+            target_files.sort_by(|a, b| {
+                let mut order = order_by_filename(a, b);
+                if *desc {
+                    order = order.reverse();
+                }
+                order
+            });
+        }
+        Mtime { desc } => {
+            target_files.sort_by(|a, b| {
+                let mut order = a.mtime.cmp(&b.mtime);
+                if *desc {
+                    order = order.reverse();
+                }
+                order.then_with(|| order_by_filename(a, b))
+            });
+        }
+    }
+}
 
-        let name_a = filename(&a);
-        let name_b = filename(&b);
-        alphanumeric_sort::compare_str(name_a, name_b).then_with(|| alphanumeric_sort::compare_str(a, b))
-    });
+fn order_by_filename(a: &TargetFile, b: &TargetFile) -> cmp::Ordering {
+    let a = a.name.to_lowercase();
+    let b = b.name.to_lowercase();
+    let fa = filename(&a);
+    let fb = filename(&b);
+    alphanumeric_sort::compare_str(fa, fb).then_with(|| alphanumeric_sort::compare_str(a, b))
 }
 
 fn copy_and_rename_to_backup(
@@ -714,7 +748,7 @@ mod tests {
         create_file(path.join("image10.jpg"), b"image10")?;
         create_file(path.join("image2.jpg"), b"image2")?;
 
-        execute_with_args([path.as_os_str().to_os_string()])?;
+        execute_with_args([path.as_os_str().to_os_string(), OsString::from("--reverse")])?;
 
         assert_eq!(fs::read(path.join("001.jpg"))?, b"image10");
         assert_eq!(fs::read(path.join("002.jpg"))?, b"image2");
@@ -723,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn files_sort_by_modified_time_asc() -> Result<()> {
+    fn files_sort_by_mtime_asc() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
         create_file_with_mtime(path.join("image1.jpg"), b"image1", 20)?;
@@ -732,9 +766,9 @@ mod tests {
 
         execute_with_args([
             path.as_os_str().to_os_string(),
-            OsString::from("--sort-by-modified-time"),
+            OsString::from("--sort-by-mtime"),
         ])?;
-            
+
         assert_eq!(fs::read(path.join("001.jpg"))?, b"image3");
         assert_eq!(fs::read(path.join("002.jpg"))?, b"image1");
         assert_eq!(fs::read(path.join("003.jpg"))?, b"image2");
@@ -742,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn files_sort_by_modified_time_desc() -> Result<()> {
+    fn files_sort_by_mtime_desc() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
         create_file_with_mtime(path.join("image1.jpg"), b"image1", 20)?;
@@ -751,9 +785,9 @@ mod tests {
 
         execute_with_args([
             path.as_os_str().to_os_string(),
-            OsString::from("--sort-by-modified-time-desc"),
+            OsString::from("--sort-by-mtime-desc"),
         ])?;
-            
+
         assert_eq!(fs::read(path.join("001.jpg"))?, b"image2");
         assert_eq!(fs::read(path.join("002.jpg"))?, b"image1");
         assert_eq!(fs::read(path.join("003.jpg"))?, b"image3");
@@ -761,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn files_with_same_modified_time_sort_by_filename() -> Result<()> {
+    fn files_with_same_mtime_sort_by_filename() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
         create_file_with_mtime(path.join("video10.mp4"), b"video10", 60)?;
@@ -770,13 +804,17 @@ mod tests {
 
         execute_with_args([
             path.as_os_str().to_os_string(),
-            OsString::from("--sort-by-modified-time"),
+            OsString::from("--sort-by-mtime"),
         ])?;
 
         assert_eq!(fs::read(path.join("001.mp4"))?, b"video7");
         assert_eq!(fs::read(path.join("002.mp4"))?, b"video3");
-        assert_eq!(fs::read(path.join("003.mp4"))?, b"image10");
+        assert_eq!(fs::read(path.join("003.mp4"))?, b"video10");
+        Ok(())
+    }
 
+    #[test]
+    fn files_with_same_mtime_sort_by_filename_desc() -> Result<()> {
         let dir = tempdir()?;
         let path = dir.path();
         create_file_with_mtime(path.join("video10.mp4"), b"video10", 60)?;
@@ -785,12 +823,12 @@ mod tests {
 
         execute_with_args([
             path.as_os_str().to_os_string(),
-            OsString::from("--sort-by-modified-time"),
+            OsString::from("--sort-by-mtime-desc"),
         ])?;
 
         assert_eq!(fs::read(path.join("001.mp4"))?, b"video10");
         assert_eq!(fs::read(path.join("002.mp4"))?, b"video3");
-        assert_eq!(fs::read(path.join("003.mp4"))?, b"image7");
+        assert_eq!(fs::read(path.join("003.mp4"))?, b"video7");
         Ok(())
     }
 
@@ -808,7 +846,10 @@ mod tests {
 
     fn create_file_with_mtime(path: PathBuf, content: &[u8], secs: u64) -> Result<PathBuf> {
         fs::write(&path, content)?;
-        OpenOptions::new().write(true).open(&path)?.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))?;
+        OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))?;
         Ok(path)
     }
 }
