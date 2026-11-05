@@ -145,6 +145,16 @@ impl RnArgs {
         }
         Ok(value.to_string())
     }
+
+    fn sort_by(&self) -> SortBy {
+        if self.sort_by_mtime {
+            Mtime { desc: false }
+        } else if self.sort_by_mtime_desc {
+            Mtime { desc: true }
+        } else {
+            FileName { desc: self.reverse }
+        }
+    }
 }
 
 struct RenamePaths {
@@ -159,7 +169,7 @@ impl RenamePaths {
 
         let to = to.unwrap_or(from.as_path());
         fs::create_dir_all(to)?;
-        let to = dunce::canonicalize(&to)?;
+        let to = dunce::canonicalize(to)?;
 
         let backup = from.join("backup");
         if to.starts_with(&backup) {
@@ -204,32 +214,23 @@ impl RenameContext {
         from: &Path,
         to_root: PathBuf,
         backup_root: PathBuf,
+        sort_by: SortBy,
         first: u32,
         verbose: bool,
         prefix: String,
         suffix: String,
-        reverse: bool,
-        sort_by_mtime: bool,
-        sort_by_mtime_desc: bool,
     ) -> RenameContext {
-        let is_subdir = to_root != from && to_root.starts_with(&from);
-        let sort_by = if sort_by_mtime {
-            SortBy::Mtime { desc: false }
-        } else if sort_by_mtime_desc {
-            SortBy::Mtime { desc: true }
-        } else {
-            SortBy::FileName { desc: reverse }
-        };
+        let is_subdir = to_root != from && to_root.starts_with(from);
 
         RenameContext {
             to_root,
             backup_root,
             is_subdir,
+            sort_by,
             first,
             verbose,
             prefix,
             suffix,
-            sort_by,
         }
     }
 }
@@ -249,7 +250,11 @@ impl TargetFile {
         }
         let name_lower = name.to_lowercase();
         let mtime = entry.metadata()?.modified()?;
-        Ok(Some(TargetFile { name, name_lower, mtime }))
+        Ok(Some(TargetFile {
+            name,
+            name_lower,
+            mtime,
+        }))
     }
 }
 
@@ -273,13 +278,11 @@ pub(crate) fn execute(args: RnArgs) -> Result<()> {
         &paths.from,
         paths.to.clone(),
         paths.backup.clone(),
+        args.sort_by(),
         args.first,
         args.verbose,
         args.prefix,
         args.suffix,
-        args.reverse,
-        args.sort_by_mtime,
-        args.sort_by_mtime_desc,
     );
     rename_files(paths, &context)?;
     fs::remove_dir(&context.backup_root)?;
@@ -317,7 +320,7 @@ fn collect_entries(paths: &RenamePaths, context: &RenameContext) -> Result<Entri
             let relative = path
                 .strip_prefix(&paths.from)
                 .expect("path should be inside from");
-            let paths = paths.join(&relative);
+            let paths = paths.join(relative);
             entries.subdirs.push(paths);
             continue;
         }
@@ -355,7 +358,7 @@ pub fn sort_files(target_files: &mut [TargetFile], sort_by: &SortBy) {
 fn order_by_filename(a: &TargetFile, b: &TargetFile) -> cmp::Ordering {
     let fa = filename(&a.name_lower);
     let fb = filename(&b.name_lower);
-    
+
     alphanumeric_sort::compare_str(fa, fb)
         .then_with(|| alphanumeric_sort::compare_str(&a.name_lower, &b.name_lower))
 }
@@ -365,13 +368,12 @@ fn copy_and_rename_to_backup(
     context: &RenameContext,
     target_files: &[TargetFile],
 ) -> Result<()> {
-    let mut count = context.first;
-    let width = (count + target_files.len() as u32)
-        .saturating_sub(1)
-        .to_string()
-        .len()
-        .max(3);
-    for file in target_files {
+    for (count, file) in (context.first..).zip(target_files.iter()) {
+        let width = (count + target_files.len() as u32)
+            .saturating_sub(1)
+            .to_string()
+            .len()
+            .max(3);
         let ext = extension(&file.name);
         let new_name = format!(
             "{}{:0width$}{}.{ext}",
@@ -388,7 +390,6 @@ fn copy_and_rename_to_backup(
             );
         }
         fs::copy(paths.from.join(&file.name), paths.backup.join(new_name))?;
-        count += 1;
     }
     Ok(())
 }
@@ -412,7 +413,7 @@ fn move_backup_to_dst(backup: &Path, to: &Path) -> Result<()> {
 
         fs::rename(
             &backup_file,
-            to.join(&backup_file.file_name().expect("file_name always exists")),
+            to.join(backup_file.file_name().expect("file_name always exists")),
         )?;
     }
     Ok(())
