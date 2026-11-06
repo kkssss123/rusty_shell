@@ -12,7 +12,7 @@ pub fn run(shell_program: Option<String>) -> Result<()> {
     }
 
     loop {
-        let readline = rl.readline("> ");
+        let readline = rl.readline(format!("{}> ", shell.cwd().display()).as_str());
         match readline {
             Ok(line) => {
                 if line.trim().is_empty() {

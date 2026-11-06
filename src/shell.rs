@@ -43,6 +43,10 @@ impl Shell {
         }
     }
 
+    pub(crate) fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
     fn run_in_system_shell(&self, line: &str) -> Result<()> {
         Command::new(&self.program)
             .args([shell_command_option(&self.program), line])
