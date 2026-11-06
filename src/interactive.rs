@@ -1,11 +1,13 @@
 use crate::{Shell, ShellOutcome};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
+use std::path::PathBuf;
 
 pub fn run(shell_program: Option<String>) -> Result<()> {
     let mut rl = DefaultEditor::new()?;
     let mut shell = Shell::new(shell_program)?;
-    if rl.load_history("history.txt").is_err() {
+    let history_path = history_file_path();
+    if rl.load_history(&history_path).is_err() {
         println!("No previous history.");
     }
 
@@ -34,6 +36,16 @@ pub fn run(shell_program: Option<String>) -> Result<()> {
             }
         }
     }
-    rl.save_history("history.txt")?;
+    if let Err(e) = rl.save_history(&history_path) {
+        eprintln!("Failed to save history: {e}");
+    }
     Ok(())
+}
+
+fn history_file_path() -> PathBuf {
+    if let Some(home) = std::env::home_dir() {
+        home.join(".rusty_shell_history")
+    } else {
+        PathBuf::from(".rusty_shell_history")
+    }
 }

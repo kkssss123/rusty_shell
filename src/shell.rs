@@ -3,6 +3,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[derive(Debug)]
 pub(crate) enum ShellOutcome {
     Continue,
     Exit,
@@ -124,10 +125,7 @@ mod tests {
     fn malformed_builtin_syntax_is_rejected_before_execution() -> Result<()> {
         let mut shell = Shell::new(None)?;
 
-        let error = match shell.execute("rn \"unterminated") {
-            Err(e) => e,
-            Ok(_) => panic!("malformed built-in syntax should be rejected"),
-        };
+        let error = shell.execute("rn \"unterminated").unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         Ok(())
@@ -147,6 +145,29 @@ mod tests {
 
         assert_eq!(shell.cwd, dunce::canonicalize(root.path().join("child"))?);
         assert_eq!(std::env::current_dir()?, process_cwd);
+        Ok(())
+    }
+
+    #[test]
+    fn cd_without_path_or_with_tilde_changes_to_home_directory() -> Result<()> {
+        let root = tempdir()?;
+        let mut shell = shell_in(root.path(), "nothing");
+        let home_dir = dunce::canonicalize(std::env::home_dir().expect("home dir should exist"))?;
+
+        shell.execute("cd")?;
+        assert_eq!(shell.cwd, home_dir);
+
+        shell.cwd = dunce::canonicalize(root.path())?;
+        shell.execute("cd ~")?;
+        assert_eq!(shell.cwd, home_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn cd_rejects_too_many_arguments() -> Result<()> {
+        let mut shell = Shell::new(None)?;
+        let error = shell.execute("cd foo bar").unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
         Ok(())
     }
 

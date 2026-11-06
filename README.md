@@ -66,12 +66,11 @@ Once the shell starts, built-in and external commands can be mixed:
 
 | Command | Description |
 |---|---|
-| `cd <PATH>` | Changes rusty-shell's working directory. Exactly one path is required. |
+| `cd [PATH]` | Changes rusty-shell's working directory. If `PATH` is omitted or `~`, moves to the home directory. Supports `~/...` expansion. |
 | `rn [FROM] [OPTIONS]` | Recursively renames supported media files. |
 | `exit` | Exits rusty-shell. |
 
-`cd` changes the working directory maintained by rusty-shell. Subsequent external
-commands and relative `rn` paths use that directory as their working directory.
+`cd` changes the working directory maintained by rusty-shell. Running `cd` without arguments or with `~` moves to the home directory, and `~/...` (or `~\...`) resolves relative to the home directory. Subsequent external commands and relative `rn` paths use that directory as their working directory.
 
 ### External commands
 
@@ -146,7 +145,7 @@ Existing files in a different `--to` destination directory may be overwritten.
 
 ## History
 
-Command history is saved as `history.txt` in the directory where rusty-shell is started.
+Command history is saved across sessions to `~/.rusty_shell_history` in the user's home directory.
 
 ## Development
 

@@ -24,16 +24,31 @@ pub(crate) fn parse_builtin(line: &str) -> io::Result<Option<BuiltinCommand>> {
 
     match name {
         "cd" => {
-            let Some(path) = args.get(1) else {
-                return Err(Error::new(ErrorKind::InvalidInput, "cd requires a path"));
-            };
-            if args.len() != 2 {
+            if args.len() > 2 {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
-                    "cd accepts exactly one path",
+                    "cd: too many arguments",
                 ));
             }
-            Ok(Some(BuiltinCommand::Cd(PathBuf::from(path))))
+            let path = match args.get(1).map(String::as_str) {
+                None | Some("~") => std::env::home_dir().ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::NotFound,
+                        "cd: could not determine home directory",
+                    )
+                })?,
+                Some(path) if path.starts_with("~/") || path.starts_with("~\\") => {
+                    let home = std::env::home_dir().ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::NotFound,
+                            "cd: could not determine home directory",
+                        )
+                    })?;
+                    home.join(&path[2..])
+                }
+                Some(path) => PathBuf::from(path),
+            };
+            Ok(Some(BuiltinCommand::Cd(path)))
         }
         "exit" => Ok(Some(BuiltinCommand::Exit)),
         "rn" => {
