@@ -1,14 +1,18 @@
+use clap::Parser;
 use rusty_shell::interactive;
 use std::process;
 
-fn main() {
-    // let args = Args::parse();
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long)]
+    shell: Option<String>,
+}
 
-    // if let Err(e) = rusty_shell::run(args) {
-    //     eprintln!("Error while running process: {e}");
-    //     process::exit(1);
-    // }
-    if let Err(e) = interactive::run() {
+fn main() {
+    let args = Args::parse();
+
+    if let Err(e) = interactive::run(args.shell) {
         eprintln!("Error while running process: {e}");
         process::exit(1);
     }

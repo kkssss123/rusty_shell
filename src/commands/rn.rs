@@ -263,7 +263,16 @@ impl Entries {
     }
 }
 
-pub(crate) fn execute(args: RnArgs) -> Result<()> {
+pub(crate) fn execute(mut args: RnArgs, cwd: &Path) -> Result<()> {
+    if args.from.is_relative() {
+        args.from = cwd.join(&args.from);
+    }
+    if let Some(to) = &mut args.to
+        && to.is_relative()
+    {
+        *to = cwd.join(&*to);
+    }
+
     let paths = RenamePaths::setup(args.from.as_path(), args.to.as_deref())?;
     let context = RenameContext::new(&paths);
     let config = RenameConfig {
@@ -829,7 +838,7 @@ mod tests {
         let args = std::iter::once(OsString::from("rn")).chain(args);
         let args = RnArgs::try_parse_from(args).expect("arguments should parsed correctly");
 
-        execute(args)
+        execute(args, &std::env::current_dir()?)
     }
 
     fn create_file(path: PathBuf, content: &[u8]) -> Result<PathBuf> {

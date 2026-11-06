@@ -1,11 +1,10 @@
-use crate::commands::rn;
-use clap::Parser;
+use crate::{Shell, ShellOutcome};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
-use std::io::{self, Error, ErrorKind};
 
-pub fn run() -> Result<()> {
+pub fn run(shell_program: Option<String>) -> Result<()> {
     let mut rl = DefaultEditor::new()?;
+    let mut shell = Shell::new(shell_program)?;
     if rl.load_history("history.txt").is_err() {
         println!("No previous history.");
     }
@@ -13,17 +12,16 @@ pub fn run() -> Result<()> {
     loop {
         let readline = rl.readline("> ");
         match readline {
-            Ok(line) if line.trim() == "exit" => {
-                break;
-            }
             Ok(line) => {
                 if line.trim().is_empty() {
                     continue;
                 }
-                rl.add_history_entry(line.as_str())?;
-                if let Err(e) = execute(&line) {
-                    eprintln!("{e}");
+                match shell.execute(&line) {
+                    Ok(ShellOutcome::Continue) => {}
+                    Ok(ShellOutcome::Exit) => break,
+                    Err(e) => eprintln!("{e}"),
                 }
+                rl.add_history_entry(line.as_str())?;
             }
             Err(ReadlineError::Eof) => {
                 break;
@@ -38,25 +36,4 @@ pub fn run() -> Result<()> {
     }
     rl.save_history("history.txt")?;
     Ok(())
-}
-
-fn execute(line: &str) -> io::Result<()> {
-    let args = shlex::split(line)
-        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "invalid command syntax"))?;
-
-    let Some(cmd) = args.first() else {
-        return Ok(());
-    };
-
-    match cmd.as_str() {
-        "rn" => {
-            let args = rn::RnArgs::try_parse_from(args)
-                .map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))?;
-            rn::execute(args)
-        }
-        _ => {
-            println!("command not found: {}", line);
-            Ok(())
-        }
-    }
 }
