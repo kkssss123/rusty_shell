@@ -96,7 +96,7 @@ fn bench_sort_files_actual(c: &mut Criterion) {
                 ActualTargetFile {
                     name,
                     name_lower,
-                    mtime: SystemTime::now(),
+                    mtime: SystemTime::UNIX_EPOCH,
                 }
             })
             .collect();

@@ -164,7 +164,7 @@ struct RenamePaths {
 }
 
 impl RenamePaths {
-    fn setup(from: &Path, to: Option<&Path>) -> Result<RenamePaths> {
+    fn setup(from: &Path, to: Option<&Path>) -> Result<Self> {
         let from = dunce::canonicalize(from)?;
 
         let to = to.unwrap_or(from.as_path());
@@ -202,37 +202,28 @@ struct RenameContext {
     to_root: PathBuf,
     backup_root: PathBuf,
     is_subdir: bool,
-    first: u32,
-    verbose: bool,
-    prefix: String,
-    suffix: String,
-    sort_by: SortBy,
 }
 
 impl RenameContext {
-    fn new(
-        from: &Path,
-        to_root: PathBuf,
-        backup_root: PathBuf,
-        sort_by: SortBy,
-        first: u32,
-        verbose: bool,
-        prefix: String,
-        suffix: String,
-    ) -> RenameContext {
-        let is_subdir = to_root != from && to_root.starts_with(from);
+    fn new(paths: &RenamePaths) -> Self {
+        let to_root = paths.to.clone();
+        let backup_root = paths.backup.clone();
+        let is_subdir = to_root != paths.from && to_root.starts_with(&paths.from);
 
         RenameContext {
             to_root,
             backup_root,
             is_subdir,
-            sort_by,
-            first,
-            verbose,
-            prefix,
-            suffix,
         }
     }
+}
+
+struct RenameConfig {
+    sort_by: SortBy,
+    first: u32,
+    verbose: bool,
+    prefix: String,
+    suffix: String,
 }
 
 #[derive(Clone)]
@@ -243,7 +234,7 @@ pub struct TargetFile {
 }
 
 impl TargetFile {
-    fn build(entry: &DirEntry) -> Result<Option<TargetFile>> {
+    fn build(entry: &DirEntry) -> Result<Option<Self>> {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !is_target(&name) {
             return Ok(None);
@@ -264,7 +255,7 @@ struct Entries {
 }
 
 impl Entries {
-    fn new() -> Entries {
+    fn new() -> Self {
         Entries {
             target_files: vec![],
             subdirs: vec![],
@@ -274,30 +265,28 @@ impl Entries {
 
 pub(crate) fn execute(args: RnArgs) -> Result<()> {
     let paths = RenamePaths::setup(args.from.as_path(), args.to.as_deref())?;
-    let context = RenameContext::new(
-        &paths.from,
-        paths.to.clone(),
-        paths.backup.clone(),
-        args.sort_by(),
-        args.first,
-        args.verbose,
-        args.prefix,
-        args.suffix,
-    );
-    rename_files(paths, &context)?;
+    let context = RenameContext::new(&paths);
+    let config = RenameConfig {
+        sort_by: args.sort_by(),
+        first: args.first,
+        verbose: args.verbose,
+        prefix: args.prefix,
+        suffix: args.suffix,
+    };
+    rename_files(paths, &context, &config)?;
     fs::remove_dir(&context.backup_root)?;
     Ok(())
 }
 
-fn rename_files(paths: RenamePaths, context: &RenameContext) -> Result<()> {
+fn rename_files(paths: RenamePaths, context: &RenameContext, config: &RenameConfig) -> Result<()> {
     let mut entries = collect_entries(&paths, context)?;
     for subdir in entries.subdirs {
-        rename_files(subdir, context)?;
+        rename_files(subdir, context, config)?;
     }
 
-    sort_files(&mut entries.target_files, &context.sort_by);
+    sort_files(&mut entries.target_files, &config.sort_by);
     fs::create_dir_all(&paths.backup)?;
-    copy_and_rename_to_backup(&paths, context, &entries.target_files)?;
+    copy_and_rename_to_backup(&paths, config, &entries.target_files)?;
     remove_src_files(&paths.from, &entries.target_files)?;
     move_backup_to_dst(&paths.backup, &paths.to)?;
     if paths.backup != context.backup_root {
@@ -365,10 +354,10 @@ fn order_by_filename(a: &TargetFile, b: &TargetFile) -> cmp::Ordering {
 
 fn copy_and_rename_to_backup(
     paths: &RenamePaths,
-    context: &RenameContext,
+    config: &RenameConfig,
     target_files: &[TargetFile],
 ) -> Result<()> {
-    for (count, file) in (context.first..).zip(target_files.iter()) {
+    for (count, file) in (config.first..).zip(target_files.iter()) {
         let width = (count + target_files.len() as u32)
             .saturating_sub(1)
             .to_string()
@@ -377,12 +366,12 @@ fn copy_and_rename_to_backup(
         let ext = extension(&file.name);
         let new_name = format!(
             "{}{:0width$}{}.{ext}",
-            context.prefix,
+            config.prefix,
             count,
-            context.suffix,
+            config.suffix,
             width = width
         );
-        if context.verbose {
+        if config.verbose {
             println!(
                 "will be renamed to: {} -> {}",
                 paths.from.join(&file.name).display(),
