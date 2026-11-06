@@ -443,8 +443,8 @@ mod tests {
 
     #[test]
     fn file_renames_to_number() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         let img_before = create_file(path.join("image.jpg"), b"test image")?;
 
         execute_with_args([path.as_os_str().to_os_string()])?;
@@ -456,8 +456,8 @@ mod tests {
 
     #[test]
     fn multiple_files_renamed_in_order() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file(path.join("image1.jpg"), b"image1")?;
         create_file(path.join("image10.jpg"), b"image10")?;
         create_file(path.join("image2.jpg"), b"image2")?;
@@ -472,8 +472,8 @@ mod tests {
 
     #[test]
     fn non_target_files_untouched() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file(path.join("image1.jpg"), b"jpg")?;
         create_file(path.join("image2.jpeg"), b"jpeg")?;
         create_file(path.join("image3.webp"), b"webp")?;
@@ -490,8 +490,8 @@ mod tests {
 
     #[test]
     fn numbering_starts_from_first() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file(path.join("image1.jpg"), b"image1")?;
         create_file(path.join("image2.jpg"), b"image2")?;
 
@@ -507,8 +507,8 @@ mod tests {
 
     #[test]
     fn number_width_expands_past_three_digits() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
 
         for i in 0..500 {
             create_file(path.join(format!("{}.jpg", i)), i.to_string().as_bytes())?;
@@ -530,13 +530,13 @@ mod tests {
         let from_path = from.path();
         create_file(from_path.join("image.jpg"), b"jpg")?;
 
-        let subdir1 = tempdir_in(from_path)?;
-        let subdir1_path = subdir1.path();
-        create_file(subdir1_path.join("image.jpeg"), b"jpeg")?;
+        let child1 = tempdir_in(from_path)?;
+        let child1_path = child1.path();
+        create_file(child1_path.join("image.jpeg"), b"jpeg")?;
 
-        let subdir2 = tempdir_in(from_path)?;
-        let subdir2_path = subdir2.path();
-        create_file(subdir2_path.join("image.webp"), b"webp")?;
+        let child2 = tempdir_in(from_path)?;
+        let child2_path = child2.path();
+        create_file(child2_path.join("image.webp"), b"webp")?;
 
         let to = tempdir()?;
         let to_path = to.path();
@@ -550,7 +550,7 @@ mod tests {
 
         let img = to_path
             .join(
-                subdir1_path
+                child1_path
                     .strip_prefix(from_path)
                     .expect("prefix always exists"),
             )
@@ -559,7 +559,7 @@ mod tests {
 
         let img = to_path
             .join(
-                subdir2_path
+                child2_path
                     .strip_prefix(from_path)
                     .expect("prefix always exists"),
             )
@@ -573,17 +573,17 @@ mod tests {
         let from = tempdir()?;
         let from_path = from.path();
 
-        let subdir1 = tempdir_in(from_path)?;
-        let subdir1_path = subdir1.path();
+        let child1 = tempdir_in(from_path)?;
+        let child1_path = child1.path();
         create_file(
-            subdir1_path.join("image_in_subdir1.jpg"),
+            child1_path.join("image_in_subdir1.jpg"),
             b"image in subdir1",
         )?;
 
-        let subdir2 = tempdir_in(from_path)?;
-        let subdir2_path = subdir2.path();
+        let child2 = tempdir_in(from_path)?;
+        let child2_path = child2.path();
         create_file(
-            subdir2_path.join("image_in_subdir2.jpg"),
+            child2_path.join("image_in_subdir2.jpg"),
             b"image in subdir2",
         )?;
 
@@ -598,7 +598,7 @@ mod tests {
 
         let img = to_path
             .join(
-                subdir1_path
+                child1_path
                     .strip_prefix(from_path)
                     .expect("prefix always exists"),
             )
@@ -607,7 +607,7 @@ mod tests {
 
         let img = to_path
             .join(
-                subdir2_path
+                child2_path
                     .strip_prefix(from_path)
                     .expect("prefix always exists"),
             )
@@ -618,31 +618,31 @@ mod tests {
 
     #[test]
     fn dst_inside_src_is_skipped() -> Result<()> {
-        let dir = tempdir()?;
-        let dir_path = dir.path();
-        create_file(dir_path.join("img1.jpg"), b"img1")?;
+        let root = tempdir()?;
+        let root_path = root.path();
+        create_file(root_path.join("img1.jpg"), b"img1")?;
 
-        let subdir1 = tempdir_in(dir_path)?;
-        let subdir1_path = subdir1.path();
-        create_file(subdir1_path.join("img2.jpg"), b"img2")?;
+        let child1 = tempdir_in(root_path)?;
+        let child1_path = child1.path();
+        create_file(child1_path.join("img2.jpg"), b"img2")?;
 
-        let subdir2 = tempdir_in(subdir1_path)?;
-        let subdir2_path = subdir2.path();
-        create_file(subdir2_path.join("img3.jpg"), b"img3")?;
+        let child2 = tempdir_in(child1_path)?;
+        let child2_path = child2.path();
+        create_file(child2_path.join("img3.jpg"), b"img3")?;
 
         execute_with_args([
-            dir_path.as_os_str().to_os_string(),
+            root_path.as_os_str().to_os_string(),
             OsString::from("--to"),
-            subdir2_path.as_os_str().to_os_string(),
+            child2_path.as_os_str().to_os_string(),
         ])?;
 
-        assert_eq!(fs::read(subdir2_path.join("img3.jpg"))?, b"img3");
-        assert_eq!(fs::read(subdir2_path.join("001.jpg"))?, b"img1");
+        assert_eq!(fs::read(child2_path.join("img3.jpg"))?, b"img3");
+        assert_eq!(fs::read(child2_path.join("001.jpg"))?, b"img1");
 
-        let img = subdir2_path
+        let img = child2_path
             .join(
-                subdir1_path
-                    .strip_prefix(dir_path)
+                child1_path
+                    .strip_prefix(root_path)
                     .expect("prefix always exists"),
             )
             .join("001.jpg");
@@ -652,8 +652,8 @@ mod tests {
 
     #[test]
     fn in_place_renaming_does_not_overwrite_files() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
 
         for i in 1..=10 {
             create_file(path.join(format!("{:03}.jpg", i)), i.to_string().as_bytes())?;
@@ -689,8 +689,8 @@ mod tests {
 
     #[test]
     fn file_renames_with_prefix() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file(path.join("from_image.jpg"), b"test image")?;
 
         execute_with_args([
@@ -705,8 +705,8 @@ mod tests {
 
     #[test]
     fn file_renames_with_suffix() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file(path.join("image.jpg"), b"test image")?;
 
         execute_with_args([
@@ -721,8 +721,8 @@ mod tests {
 
     #[test]
     fn file_renames_with_affixes() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file(path.join("image.jpg"), b"test image")?;
 
         execute_with_args([
@@ -744,8 +744,8 @@ mod tests {
 
     #[test]
     fn files_sort_by_filename_desc() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file(path.join("image1.jpg"), b"image1")?;
         create_file(path.join("image10.jpg"), b"image10")?;
         create_file(path.join("image2.jpg"), b"image2")?;
@@ -760,8 +760,8 @@ mod tests {
 
     #[test]
     fn files_sort_by_mtime_asc() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file_with_mtime(path.join("image1.jpg"), b"image1", 20)?;
         create_file_with_mtime(path.join("image2.jpg"), b"image2", 30)?;
         create_file_with_mtime(path.join("image3.jpg"), b"image3", 10)?;
@@ -779,8 +779,8 @@ mod tests {
 
     #[test]
     fn files_sort_by_mtime_desc() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file_with_mtime(path.join("image1.jpg"), b"image1", 20)?;
         create_file_with_mtime(path.join("image2.jpg"), b"image2", 30)?;
         create_file_with_mtime(path.join("image3.jpg"), b"image3", 10)?;
@@ -798,8 +798,8 @@ mod tests {
 
     #[test]
     fn files_with_same_mtime_sort_by_filename() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file_with_mtime(path.join("video10.mp4"), b"video10", 60)?;
         create_file_with_mtime(path.join("video7.mp4"), b"video7", 30)?;
         create_file_with_mtime(path.join("video3.mp4"), b"video3", 60)?;
@@ -817,8 +817,8 @@ mod tests {
 
     #[test]
     fn files_with_same_mtime_desc_sort_by_filename() -> Result<()> {
-        let dir = tempdir()?;
-        let path = dir.path();
+        let root = tempdir()?;
+        let path = root.path();
         create_file_with_mtime(path.join("video10.mp4"), b"video10", 60)?;
         create_file_with_mtime(path.join("video7.mp4"), b"video7", 30)?;
         create_file_with_mtime(path.join("video3.mp4"), b"video3", 60)?;
