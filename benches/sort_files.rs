@@ -39,9 +39,9 @@ fn bench_sort_files_mock(c: &mut Criterion) {
                 let extensions = [".mp4", ".JPEG", ".jpg", ".PNG", ".webp"];
 
                 format!(
-                    "{}_{:04}{}",
+                    "{}_{:05}{}",
                     prefixes[i % prefixes.len()],
-                    i * 7 % 1000,
+                    i,
                     extensions[i % extensions.len()],
                 )
             })
@@ -87,9 +87,9 @@ fn bench_sort_files_actual(c: &mut Criterion) {
                 let extensions = [".mp4", ".JPEG", ".jpg", ".PNG", ".webp"];
 
                 let name = format!(
-                    "{}_{:04}{}",
+                    "{}_{:05}{}",
                     prefixes[i % prefixes.len()],
-                    i * 7 % 1000,
+                    i,
                     extensions[i % extensions.len()],
                 );
                 let name_lower = name.to_lowercase();
