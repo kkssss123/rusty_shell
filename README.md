@@ -1,10 +1,14 @@
 # rusty-shell
 
-A small command-line shell written in Rust.
+A small interactive command-line shell written in Rust. It provides built-in
+commands and delegates other input to a selected system shell.
 
 ## Features
 
-- Launches a shell session.
+- Interactive prompt with command history.
+- Built-in `cd`, `exit`, and `rn` commands.
+- Delegates external commands to `cmd`, `sh`, PowerShell, or another selected shell.
+- Supports shell-local working directories for built-in and external commands.
 - Recursively renames supported media files using sequential numbers.
 - Preserves the original directory structure.
 - Supports sorting by filename or modification time.
@@ -40,9 +44,62 @@ Start the shell:
 cargo run --release
 ```
 
-Once the shell starts, run the `rn` command:
+Use `-s` or `--shell` to select the system shell used for external commands:
 
 ```bash
+cargo run --release -- --shell powershell
+cargo run --release -- -s pwsh
+```
+
+Without this option, rusty-shell uses `cmd` on Windows and `sh` on other platforms.
+
+Once the shell starts, built-in and external commands can be mixed:
+
+```text
+> cd ./photos
+> rn --prefix IMG_
+> git status
+> exit
+```
+
+### Built-in commands
+
+| Command | Description |
+|---|---|
+| `cd <PATH>` | Changes rusty-shell's working directory. Exactly one path is required. |
+| `rn [FROM] [OPTIONS]` | Recursively renames supported media files. |
+| `exit` | Exits rusty-shell. |
+
+`cd` changes the working directory maintained by rusty-shell. Subsequent external
+commands and relative `rn` paths use that directory as their working directory.
+
+### External commands
+
+Input that is not a built-in command is passed unchanged to the selected system shell.
+This allows the selected shell to handle pipes, redirection, and conditional execution.
+
+```text
+> dir | findstr ".rs"
+> cargo test > test.log
+> git status && cargo test
+```
+
+The command invocation option depends on the selected shell:
+
+| Shell | Invocation |
+|---|---|
+| `cmd`, `cmd.exe` | `/C <command>` |
+| `powershell`, `pwsh` | `-Command <command>` |
+| Other shells, such as `sh` and `bash` | `-c <command>` |
+
+External-command syntax is interpreted by the selected shell. Built-in command
+arguments are parsed by rusty-shell.
+
+### `rn` command
+
+Use the `rn` command to recursively rename supported media files:
+
+```text
 rn [FROM] [OPTIONS]
 ```
 
@@ -60,29 +117,36 @@ rn [FROM] [OPTIONS]
 |---|---|
 | `--to <TO>` | Destination directory |
 | `-f, --first <FIRST>` | Starting number (default: 1) |
-| `-v, --verbose` | Display detailed output |
+| `-v, --verbose` | Display each source and destination path |
 | `-p, --prefix <PREFIX>` | Add a prefix to filenames |
 | `-s, --suffix <SUFFIX>` | Add a suffix to filenames |
 | `--reverse` | Sort filenames in descending order |
 | `--sort-by-mtime` | Sort by modification time in ascending order |
 | `--sort-by-mtime-desc` | Sort by modification time in descending order |
-| `-h, --help` | Print help information |
 
-By default, files are sorted by filename in ascending order. Files with the same modification time are sorted by filename in ascending order.
+By default, files are sorted by filename in ascending order. Files with the same
+modification time are sorted by filename in ascending order. Numbering restarts in
+each directory.
 
 ### Examples
 
-```bash
-rn
-rn ./photos
-rn ./photos --to ./renamed
-rn ./photos --first 100
-rn ./photos --prefix vacation_
-rn ./photos --suffix _edited
-rn ./photos --reverse
-rn ./photos --sort-by-mtime
-rn ./photos --sort-by-mtime-desc
+```text
+> rn
+> rn ./photos
+> rn ./photos --to ./renamed
+> rn ./photos --first 100
+> rn ./photos --prefix vacation_
+> rn ./photos --suffix _edited
+> rn ./photos --reverse
+> rn ./photos --sort-by-mtime
+> rn ./photos --sort-by-mtime-desc
 ```
+
+Existing files in a different `--to` destination directory may be overwritten.
+
+## History
+
+Command history is saved as `history.txt` in the directory where rusty-shell is started.
 
 ## Development
 
@@ -96,4 +160,10 @@ Build the project:
 
 ```bash
 cargo build
+```
+
+Run benchmarks:
+
+```bash
+cargo bench
 ```
