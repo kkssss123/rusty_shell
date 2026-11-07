@@ -11,6 +11,7 @@ commands and delegates other input to a selected system shell.
 - Supports shell-local working directories for built-in and external commands.
 - Recursively renames supported media files using sequential numbers.
 - Preserves the original directory structure.
+- Processes subdirectories in parallel.
 - Supports sorting by filename or modification time.
 - Supports custom filename prefixes and suffixes.
 - Supports in-place renaming and renaming to a destination directory.
@@ -102,6 +103,8 @@ Use the `rn` command to recursively rename supported media files:
 rn [FROM] [OPTIONS]
 ```
 
+`FROM` defaults to the current directory (`.`).
+
 ### Supported file extensions
 
 - `jpg`
@@ -127,6 +130,9 @@ By default, files are sorted by filename in ascending order. Files with the same
 modification time are sorted by filename in ascending order. Numbering restarts in
 each directory.
 
+Verbose output from different subdirectories may appear in
+an unpredictable order because subdirectories are processed in parallel.
+
 ### Examples
 
 ```text
@@ -141,7 +147,19 @@ each directory.
 > rn ./photos --sort-by-mtime-desc
 ```
 
-Existing files in a different `--to` destination directory may be overwritten.
+When `--to` specifies a different destination directory,
+existing files with matching names may be overwritten.
+
+### Error handling and recovery
+
+If an error occurs during renaming, the backup directory under `FROM`
+is retained to help recover files.
+
+Depending on when the error occurs, some files may already have been
+moved to `TO`, while others remain in the backup directory.
+Check both locations when recovering from a failed operation.
+
+The backup directory is removed after successful completion.
 
 ## History
 

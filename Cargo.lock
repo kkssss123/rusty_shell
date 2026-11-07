@@ -641,6 +641,7 @@ dependencies = [
  "clap",
  "criterion",
  "dunce",
+ "rayon",
  "rustyline",
  "shlex",
  "tempfile",

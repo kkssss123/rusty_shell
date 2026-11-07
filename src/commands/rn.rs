@@ -1,5 +1,6 @@
 use self::SortBy::*;
 use clap::Parser;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::fs::DirEntry;
 use std::io::{Error, ErrorKind, Result};
 use std::path::{Path, PathBuf};
@@ -15,7 +16,10 @@ const TARGET_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "webp", "png", "mp4"];
     long_about = "\
 Recursively searches FROM for supported media files
 (currently .jpg, .jpeg, .webp, .png, and .mp4),
-sorts them by filename, and renames them using sequential numbers.
+sorts them according to the selected options,
+and renames them using sequential numbers.
+
+FROM defaults to the current directory (.).
 
 By default, files are sorted by filename in ascending order.
 Use --reverse to sort by filename in descending order.
@@ -34,7 +38,7 @@ renamed files are written under TO. Existing files in a different
 destination directory may be overwritten.
 
 PREFIX and SUFFIX are added before and after the sequence number,
-respectively. Both are optional and default to an empty strings.",
+respectively. Both are optional and default to empty strings.",
     override_usage = "\
 rn [FROM] [OPTIONS]",
     after_help = "\
@@ -289,9 +293,10 @@ pub(crate) fn execute(mut args: RnArgs, cwd: &Path) -> Result<()> {
 
 fn rename_files(paths: RenamePaths, context: &RenameContext, config: &RenameConfig) -> Result<()> {
     let mut entries = collect_entries(&paths, context)?;
-    for subdir in entries.subdirs {
-        rename_files(subdir, context, config)?;
-    }
+    entries
+        .subdirs
+        .into_par_iter()
+        .try_for_each(|subdir| rename_files(subdir, context, config))?;
 
     sort_files(&mut entries.target_files, &config.sort_by);
     fs::create_dir_all(&paths.backup)?;
@@ -309,6 +314,10 @@ fn collect_entries(paths: &RenamePaths, context: &RenameContext) -> Result<Entri
 
     for entry in fs::read_dir(&paths.from)? {
         let entry = entry?;
+        if entry.file_type()?.is_symlink() {
+            continue;
+        }
+
         let path = dunce::canonicalize(entry.path())?;
 
         if path.is_dir() {
